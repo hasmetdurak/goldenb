@@ -10,6 +10,16 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Live bağımlılıklar: build argümanı ile opsiyonel kurulum.
+# Kullanım:
+#   docker build --build-arg INSTALL_LIVE_DEPS=true -t goldenb:live .
+# veya LIVE profilinde docker compose ile otomatik.
+ARG INSTALL_LIVE_DEPS=false
+COPY requirements-live.txt ./
+RUN if [ "$INSTALL_LIVE_DEPS" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-live.txt; \
+    fi
+
 COPY . .
 
 EXPOSE 8501

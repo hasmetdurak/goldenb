@@ -1,13 +1,25 @@
 version: "3.9"
 
 # GoldenBet AI - Lokal Docker Compose (Dokploy referansı)
-# Çalıştırmak için: docker compose up --build
+#
+# İki profille gelir:
+#   * default    → sadece Streamlit app (MVP, stateless)
+#   * live      → app + PostgreSQL + Redis (canlı API için)
+#
+# Çalıştırmak için:
+#   docker compose up --build                          (sadece app)
+#   docker compose --profile live up --build           (full stack)
+#
+# Dokploy'da "live" profilini seçtiğinde redis + postgres de kalkar
+# ve DATABASE_URL / REDIS_URL app'e otomatik inject edilir.
 
 services:
   goldenb:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        INSTALL_LIVE_DEPS: ${INSTALL_LIVE_DEPS:-false}
     image: goldenb:0.1.0
     container_name: goldenb
     restart: unless-stopped
@@ -16,6 +28,14 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_HEADLESS=true
+      # Live profile aktifken aşağıdaki URL'ler dolu gelir
+      - DATABASE_URL=${DATABASE_URL:-}
+      - REDIS_URL=${REDIS_URL:-}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-goldenb}
+      - POSTGRES_USER=${POSTGRES_USER:-goldenb}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-goldenb}
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5).status==200 else 1)"]
@@ -23,11 +43,58 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-    # Redis'e GEREK YOK (MVP stateless)
-    # Dış API'lere çıkış gerekir (NBA stats + EuroLeague)
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    networks:
+      - goldenb-net
+
+  # ---------------------------------------------------------------------------
+  # LIVE PROFILE - Canlı API geldiğinde aktive et
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: goldenb-postgres
+    profiles: ["live"]
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-goldenb}
+      - POSTGRES_USER=${POSTGRES_USER:-goldenb}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-goldenb}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-goldenb} -d ${POSTGRES_DB:-goldenb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goldenb-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: goldenb-redis
+    profiles: ["live"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks:
       - goldenb-net
 
 networks:
   goldenb-net:
     driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
