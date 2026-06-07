@@ -12,11 +12,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p .streamlit
-
 EXPOSE 8501
 
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# python:3.11-slim'de curl yok; Python ile sağlık kontrolü yapıyoruz.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5).status==200 else 1)"
 
 ENTRYPOINT ["streamlit", "run", "app.py", \
             "--server.port=8501", \
