@@ -2,20 +2,27 @@
 GoldenBet AI - Patron Komut Paneli
 ==================================
 
-Streamlit tabanlı dark-mode trading arayüzü.
+Streamlit tabanlı dark-mode trading arayüzü (3-zone dashboard).
 
-Yan menü 3 modülden oluşur:
-    1) Canlı Tahmin       → lig, sezon, eşleşme, kasa, oran, canlı gözlem
-    2) Veriyle Tahmin     → sezon yükleme, backtest, tarihsel derin öğrenme
-    3) Ayarlar            → bağlam etiketi, motor sıfırlama
+Yan menü (sidebar)
+------------------
+* Mod seçimi       : Canlı Maç Takibi | Zaman Tüneli (Backtest)
+* Maç seçimi       : mod'a göre lig/sezon/tip/eşleşme VEYA ünlü maç
+* Ayarlar expander : kasa, oran, barem, skor, dakika, bağlam, reset
+
+Ana ekran
+---------
+* Üst bar   : 4 metric (maç, skor, süre, barem)
+* Karar     : 2-col (Neon Sinyal Kutusu | Kasa Yönetimi)
+* Öğrenme   : 2-col (MAE grafiği | Bias / Variance)
 
 Akış
 ----
-1) Sidebar → lig + sezon seçilir, eşleşme otomatik yüklenir.
-2) Eşleşme seçilince baseline otomatik hesaplanır.
+1) Sidebar → lig + sezon + (NBA'de) sezon tipi seçilir.
+2) Fikstür otomatik yüklenir, eşleşme selectbox dolar.
 3) Slider/input değiştikçe AdaptiveMonteCarloEngine tahmin üretir.
 4) Sinyal (ÜST/ALT/PAS) + tutar hesaplanır, neon kutuya yazılır.
-5) İsteğe bağlı: Tarihsel modda ünlü maçın çeyrekleri üzerinden motor kalibre edilir.
+5) Zaman Tüneli modunda ünlü maçın çeyrekleri üzerinden motor kalibre edilir.
 """
 
 from __future__ import annotations
@@ -35,14 +42,14 @@ import engine as eng
 # Sayfa Konfigürasyonu
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="GoldenBet AI · Patron Komut Paneli",
+    page_title="GoldenBet AI · Canlı Tahmin Merkezi",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
 # -----------------------------------------------------------------------------
-# CSS — Minimal / Responsive Neon Trading Ekranı
+# CSS — 3-Zone Dashboard (GitHub Dark + Neon Accent)
 # -----------------------------------------------------------------------------
 NEON_CSS = """
 <style>
@@ -51,6 +58,12 @@ NEON_CSS = """
 .stApp {
     background: radial-gradient(ellipse at top, #0F172A 0%, #05080F 75%);
     font-family: 'JetBrains Mono', monospace;
+}
+
+.block-container {
+    padding-top: 1.5rem !important;
+    padding-bottom: 0rem !important;
+    max-width: 100% !important;
 }
 
 h1, h2, h3, h4 {
@@ -62,25 +75,28 @@ h1, h2, h3, h4 {
 [data-testid="stSidebar"] {
     background: #0A0E1A;
     border-right: 1px solid #1F2937;
-    padding: 0.6rem 0.7rem !important;
+    padding: 0.8rem 0.8rem !important;
 }
+[data-testid="stSidebar"] h1 { font-size: 1.05rem !important; margin-bottom: 0.6rem; }
 [data-testid="stSidebar"] h2 {
     font-size: 0.78rem !important;
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: #6B7280 !important;
-    margin: 0.4rem 0 0.5rem 0 !important;
+    margin: 0.6rem 0 0.4rem 0 !important;
     padding-bottom: 0.3rem;
     border-bottom: 1px solid #1F2937;
 }
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] .stMarkdown p {
-    font-size: 0.75rem !important;
+    font-size: 0.74rem !important;
     color: #9CA3AF !important;
+    margin-bottom: 0.15rem !important;
 }
 [data-testid="stSidebar"] input,
-[data-testid="stSidebar"] select {
-    font-size: 0.8rem !important;
+[data-testid="stSidebar"] select,
+[data-testid="stSidebar"] textarea {
+    font-size: 0.78rem !important;
     min-height: 30px !important;
 }
 [data-testid="stSidebar"] button {
@@ -88,84 +104,111 @@ h1, h2, h3, h4 {
     padding: 0.3rem 0.5rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
-    font-size: 0.7rem !important;
+    font-size: 0.68rem !important;
 }
-[data-testid="stSidebar"]::-webkit-scrollbar { display: none; }
 
+.stMetric {
+    background-color: #0d1117 !important;
+    padding: 10px 12px !important;
+    border-radius: 8px !important;
+    border: 1px solid #21262d !important;
+}
 [data-testid="stMetricValue"] {
     color: #00FF7F !important;
     font-family: 'JetBrains Mono', monospace !important;
     font-weight: 800 !important;
+    font-size: 1.1rem !important;
 }
 [data-testid="stMetricLabel"] {
     color: #9CA3AF !important;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 0.72rem !important;
+    letter-spacing: 0.08em;
+    font-size: 0.7rem !important;
+}
+
+div.stButton > button:first-child {
+    width: 100%;
+    font-weight: bold;
+    border-radius: 6px;
 }
 
 .neon-box {
-    border: 2px solid #FF1744;
-    border-radius: clamp(8px, 1.5vw, 14px);
-    padding: clamp(12px, 2.5vw, 28px) clamp(14px, 3vw, 32px);
-    background: linear-gradient(135deg, rgba(0,255,127,0.06), rgba(0,0,0,0.5));
-    box-shadow: 0 0 18px rgba(255,23,68,0.4), inset 0 0 18px rgba(0,255,127,0.05);
-    animation: pulse 1.6s ease-in-out infinite;
+    background-color: #0f1c13;
+    padding: clamp(16px, 2.5vw, 28px) clamp(18px, 3vw, 32px);
+    border-radius: 12px;
+    border: 2px solid #238636;
     text-align: center;
-    margin: clamp(8px, 1.5vw, 14px) 0;
+    box-shadow: 0 0 18px rgba(35, 134, 54, 0.25);
+    margin: 8px 0;
 }
-@keyframes pulse {
-    0%, 100% { box-shadow: 0 0 18px rgba(255,23,68,0.4), inset 0 0 18px rgba(0,255,127,0.05); }
-    50%      { box-shadow: 0 0 32px rgba(255,23,68,0.7), inset 0 0 24px rgba(0,255,127,0.10); }
-}
-.neon-title {
-    color: #00FF7F;
-    font-size: clamp(0.8rem, 1.7vw, 1.4rem);
+.neon-box.signal-strong { border-color: #238636; box-shadow: 0 0 22px rgba(35, 134, 54, 0.45); }
+.neon-box.signal-hedge  { border-color: #FFB300; box-shadow: 0 0 22px rgba(255, 179, 0, 0.35); }
+.neon-box.signal-pass   { border-color: #374151; opacity: 0.7; box-shadow: none; }
+
+.neon-badge {
+    display: inline-block;
+    color: #2ea043;
     font-weight: 800;
-    letter-spacing: clamp(0.08em, 0.3vw, 0.2em);
-    margin-bottom: clamp(6px, 1vw, 12px);
+    font-size: clamp(0.85rem, 1.4vw, 1.15rem);
+    letter-spacing: 0.12em;
     text-transform: uppercase;
+    margin-bottom: 8px;
 }
 .neon-action {
-    color: #FFFFFF;
-    font-size: clamp(1.3rem, 4.5vw, 2.4rem);
+    color: #ffffff;
+    margin: 8px 0 10px 0;
+    font-size: clamp(1.6rem, 4.5vw, 2.8rem);
+    font-family: 'JetBrains Mono', monospace;
     font-weight: 800;
-    margin: clamp(6px, 1.2vw, 12px) 0;
-    text-shadow: 0 0 12px #00FF7F;
-    line-height: 1.15;
+    line-height: 1.1;
 }
 .neon-sub {
-    color: #9CA3AF;
-    font-size: clamp(0.72rem, 1.3vw, 1.0rem);
-    letter-spacing: 0.05em;
-    line-height: 1.4;
+    color: #8b949e;
+    font-size: clamp(0.7rem, 1.2vw, 0.92rem);
+    margin: 4px 0;
+    letter-spacing: 0.04em;
 }
-.tag-strong  { color: #00FF7F; font-weight: 800; }
-.tag-hedge   { color: #FFB300; font-weight: 800; }
-.tag-pass    { color: #6B7280; font-weight: 800; }
+.neon-sub b { color: #c9d1d9; }
 
-.dashboard-card {
-    border: 1px solid #1F2937;
-    border-radius: 10px;
-    padding: 16px;
-    background: #0F172A;
-    margin-bottom: 12px;
+.kasa-card {
+    background-color: #0d1117;
+    padding: clamp(16px, 2.5vw, 24px);
+    border-radius: 12px;
+    border: 1px solid #30363d;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+.kasa-card h3 {
+    color: #f0f6fc !important;
+    margin: 8px 0 12px 0 !important;
+    font-size: clamp(1.1rem, 2vw, 1.5rem) !important;
+}
+.kasa-card p { color: #8b949e; font-size: 0.85rem; margin: 4px 0; }
+.kasa-card .kasa-title {
+    color: #58a6ff;
+    font-weight: 700;
+    font-size: 0.78rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
 }
 
-[data-testid="stDataFrame"] {
-    border: 1px solid #1F2937;
-    border-radius: 8px;
+.mae-card {
+    background-color: #0d1117;
+    padding: clamp(14px, 2vw, 20px);
+    border-radius: 12px;
+    border: 1px solid #30363d;
+    height: 100%;
+}
+.mae-card h3 {
+    color: #f0f6fc !important;
+    font-size: 0.95rem !important;
+    margin: 0 0 10px 0 !important;
 }
 
 @media (max-width: 768px) {
-    .neon-action { font-size: 1.2rem; }
-    .neon-title  { font-size: 0.85rem; }
-    .neon-box    { padding: 12px 14px; }
-}
-@media (max-width: 480px) {
-    .neon-action { font-size: 1.05rem; }
-    .neon-title  { font-size: 0.78rem; }
-    .neon-sub    { font-size: 0.7rem; }
+    .neon-action { font-size: 1.5rem; }
+    .neon-box, .kasa-card, .mae-card { padding: 14px; }
 }
 </style>
 """
@@ -178,20 +221,41 @@ st.markdown(NEON_CSS, unsafe_allow_html=True)
 def _init_state() -> None:
     if "engine" not in st.session_state:
         st.session_state.engine = eng.AdaptiveMonteCarloEngine()
-    if "df_history" not in st.session_state:
-        st.session_state.df_history = pd.DataFrame()
-    if "baseline_avg" not in st.session_state:
-        st.session_state.baseline_avg = 0.0
-    if "total_minutes" not in st.session_state:
-        st.session_state.total_minutes = 40
+    if "mod" not in st.session_state:
+        st.session_state.mod = "canli"
     if "league" not in st.session_state:
         st.session_state.league = "NBA"
     if "season" not in st.session_state:
         st.session_state.season = "2024-25"
-    if "team_label" not in st.session_state:
-        st.session_state.team_label = ""
-    if "prematch_orders" not in st.session_state:
-        st.session_state.prematch_orders = pd.DataFrame()
+    if "season_type" not in st.session_state:
+        st.session_state.season_type = "Regular Season"
+    if "budget" not in st.session_state:
+        st.session_state.budget = 10_000
+    if "odds" not in st.session_state:
+        st.session_state.odds = eng.DEFAULT_ODDS
+    if "market_line" not in st.session_state:
+        st.session_state.market_line = 215.0
+    if "current_score" not in st.session_state:
+        st.session_state.current_score = 110
+    if "total_minutes" not in st.session_state:
+        st.session_state.total_minutes = 40
+    if "schedule_df" not in st.session_state:
+        st.session_state.schedule_df = pd.DataFrame()
+    if "schedule_signature" not in st.session_state:
+        st.session_state.schedule_signature = ""
+    if "selected_match" not in st.session_state:
+        st.session_state.selected_match = None
+    if "baseline_avg" not in st.session_state:
+        st.session_state.baseline_avg = 0.0
+    if "context_tag" not in st.session_state:
+        st.session_state.context_tag = "Normal_Season_Match"
+    if "last_prediction" not in st.session_state:
+        st.session_state.last_prediction = None
+    if "last_signal" not in st.session_state:
+        st.session_state.last_signal = {
+            "order": "PAS", "strength": "ZAYIF",
+            "diff": "+0.00", "confidence": "0.0%",
+        }
     if "live_order" not in st.session_state:
         st.session_state.live_order = pd.DataFrame()
     if "order_log" not in st.session_state:
@@ -199,31 +263,18 @@ def _init_state() -> None:
             columns=["Zaman", "Faz", "Kademe", "Barem",
                      "Tutar (₺)", "Oran", "Yön", "Güç", "Not"]
         )
-    if "last_signal" not in st.session_state:
-        st.session_state.last_signal = {"order": "PAS", "strength": "ZAYIF",
-                                        "diff": "+0.00", "confidence": "0.0%"}
-    if "last_prediction" not in st.session_state:
-        st.session_state.last_prediction = None
     if "backtest_result" not in st.session_state:
         st.session_state.backtest_result = None
     if "historical_mode" not in st.session_state:
         st.session_state.historical_mode = False
     if "historical_quarters" not in st.session_state:
-        st.session_state.historical_quarters: Dict[int, float] = {}
+        st.session_state.historical_quarters = {}
     if "historical_label" not in st.session_state:
         st.session_state.historical_label = ""
     if "current_quarter" not in st.session_state:
         st.session_state.current_quarter = 0
     if "historical_running" not in st.session_state:
         st.session_state.historical_running = False
-    if "context_tag" not in st.session_state:
-        st.session_state.context_tag = "Normal_Season_Match"
-    if "schedule_df" not in st.session_state:
-        st.session_state.schedule_df = pd.DataFrame()
-    if "schedule_signature" not in st.session_state:
-        st.session_state.schedule_signature = ""
-    if "selected_match" not in st.session_state:
-        st.session_state.selected_match: Optional[Dict[str, Any]] = None
 
 
 _init_state()
@@ -232,19 +283,20 @@ _init_state()
 # -----------------------------------------------------------------------------
 # Yardımcılar — Fikstür Yükleme & Eşleşme Listesi
 # -----------------------------------------------------------------------------
-def _load_schedule(league: str, season: str) -> pd.DataFrame:
-    """Lig/sezon fikstürünü yükler; boş DataFrame dönebilir."""
+def _load_schedule(league: str, season: str, season_type: str) -> pd.DataFrame:
+    """Lig/sezon(/tip) fikstürünü yükler; hata/boş durumda boş DataFrame."""
     if league == "NBA":
-        return df_lib.fetch_nba_season_schedule(season=season)
-    if league in ("EuroLeague", "EuroCup"):
-        comp = "E" if league == "EuroLeague" else "U"
-        # fetch_euroleague_data zaten oynanmış maçları TOPLAM kolonu ile döner
-        return df_lib.fetch_euroleague_data(season_code=season, competition=comp)
+        return df_lib.fetch_nba_season_schedule(
+            season=season, season_type=season_type
+        )
+    if league == "EuroLeague":
+        return df_lib.fetch_euroleague_data(season_code=season, competition="E")
+    if league == "EuroCup":
+        return df_lib.fetch_euroleague_data(season_code=season, competition="U")
     return pd.DataFrame()
 
 
 def _format_match_options(df: pd.DataFrame, league: str) -> list[str]:
-    """Selectbox için etiket listesi üretir."""
     if df is None or df.empty:
         return []
     if league == "NBA":
@@ -260,7 +312,6 @@ def _format_match_options(df: pd.DataFrame, league: str) -> list[str]:
 
 
 def _extract_match(df: pd.DataFrame, idx: int, league: str) -> Optional[Dict[str, Any]]:
-    """Satırdan sözlük formatında eşleşme çıkarır (baseline için)."""
     if df is None or df.empty or idx is None or idx < 0 or idx >= len(df):
         return None
     row = df.iloc[idx]
@@ -282,344 +333,299 @@ def _extract_match(df: pd.DataFrame, idx: int, league: str) -> Optional[Dict[str
 
 
 def _ensure_schedule() -> None:
-    """Mevcut lig/sezon için fikstür yoksa yükler."""
-    sig = f"{st.session_state.league}|{st.session_state.season}"
+    sig = (
+        f"{st.session_state.league}|"
+        f"{st.session_state.season}|"
+        f"{st.session_state.season_type}"
+    )
     if st.session_state.schedule_signature == sig and not st.session_state.schedule_df.empty:
         return
-    with st.spinner("📡 Sezon fikstürü yükleniyor…"):
+    with st.spinner("📡 Fikstür yükleniyor…"):
         st.session_state.schedule_df = _load_schedule(
-            st.session_state.league, st.session_state.season
+            st.session_state.league,
+            st.session_state.season,
+            st.session_state.season_type,
         )
         st.session_state.schedule_signature = sig
-        # Eşleşme seçimi sıfırlanır
         st.session_state.selected_match = None
         st.session_state.baseline_avg = 0.0
-        st.session_state.prematch_orders = pd.DataFrame()
-        st.session_state.df_history = pd.DataFrame()
+        st.session_state.prematch_orders = pd.DataFrame() \
+            if "prematch_orders" in st.session_state else pd.DataFrame()
 
 
 # -----------------------------------------------------------------------------
-# Sidebar — 3 Menü Yapısı
+# Sidebar — Mod · Maç Seçimi · Ayarlar
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    # ------------------------------------------------------------------ MENU 1
-    st.markdown("## 📡 CANLI TAHMİN")
-    _ensure_schedule()
+    st.title("🎯 GoldenBet Kontrol")
 
-    _LEAGUES = ["NBA", "EuroLeague", "EuroCup"]
-    league = st.selectbox(
-        "Lig",
-        _LEAGUES,
-        index=_LEAGUES.index(st.session_state.league)
-        if st.session_state.league in _LEAGUES else 0,
-        key="_sb_league",
-    )
-    st.session_state.league = league
+    _MODES = ["🔴 Canlı Maç Takibi", "⏳ Zaman Tüneli (Backtest)"]
+    _mod_label = st.radio("Mod Seçimi", _MODES, key="_sb_mod",
+                          index=0 if st.session_state.mod == "canli" else 1)
+    st.session_state.mod = "canli" if "Canlı" in _mod_label else "zaman_tuneli"
 
-    if league == "NBA":
-        _default_season = "2024-25"
-    elif league == "EuroLeague":
-        _default_season = "E2024"
-    else:
-        _default_season = "U2024"
-    if not st.session_state.season or (
-        league == "NBA" and not st.session_state.season.endswith("-")
-        and "-" not in st.session_state.season
-    ):
-        st.session_state.season = _default_season
+    st.divider()
 
-    season = st.text_input(
-        "Sezon", value=st.session_state.season, key="_sb_season"
-    )
-    st.session_state.season = season
-
-    # Eşleşme selectbox (otomatik dolu)
-    match_options = _format_match_options(
-        st.session_state.schedule_df, st.session_state.league
-    )
-    if match_options:
-        match_label = st.selectbox("Eşleşme", match_options, index=0, key="_sb_match")
-        match_idx = match_options.index(match_label)
-        st.session_state.selected_match = _extract_match(
-            st.session_state.schedule_df, match_idx, st.session_state.league
+    # --- Maç Seçimi (mod'a göre) ---
+    if st.session_state.mod == "canli":
+        _LEAGUES = ["NBA", "EuroLeague", "EuroCup"]
+        league = st.selectbox(
+            "Lig", _LEAGUES,
+            index=_LEAGUES.index(st.session_state.league)
+            if st.session_state.league in _LEAGUES else 0,
+            key="_sb_league",
         )
-        # Baseline otomatik hesapla
-        if st.session_state.baseline_avg <= 0 and not st.session_state.schedule_df.empty:
-            st.session_state.baseline_avg = df_lib.compute_schedule_baseline(
-                st.session_state.schedule_df, st.session_state.league
-            )
-            st.session_state.df_history = st.session_state.schedule_df
-            ladder = eng.build_ladder_lines(st.session_state.baseline_avg) \
-                if st.session_state.baseline_avg > 0 else []
-            st.session_state.prematch_orders = eng.build_prematch_orders(
-                st.session_state.budget if hasattr(st.session_state, "budget") else 10_000,
-                ladder, odds=eng.DEFAULT_ODDS,
-            ) if ladder else pd.DataFrame()
-    else:
-        st.caption("⚠️ Sezon fikstürü boş. Veri kaynağına ulaşılamıyor olabilir.")
-        st.session_state.selected_match = None
+        st.session_state.league = league
 
-    st.session_state.team_label = (
-        st.session_state.selected_match["label"]
-        if st.session_state.selected_match else ""
-    )
-
-    # Kompakt canlı gözlem — 2 sütunlu grid
-    total_minutes = cfg.get_total_minutes(league)
-    st.session_state.total_minutes = total_minutes
-
-    _cg1, _cg2 = st.columns(2)
-    with _cg1:
-        budget = st.number_input(
-            "Kasa (₺)", min_value=100, max_value=1_000_000,
-            value=10_000, step=500, key="_sb_budget",
-        )
-    with _cg2:
-        odds = st.number_input(
-            "Oran", min_value=1.01, max_value=5.00,
-            value=eng.DEFAULT_ODDS, step=0.01, key="_sb_odds",
-        )
-    _cg3, _cg4 = st.columns(2)
-    with _cg3:
-        current_score = st.number_input(
-            "Skor", min_value=0, max_value=400, value=110, step=1, key="_sb_score",
-        )
-    with _cg4:
-        market_line = st.number_input(
-            "Barem", min_value=80.0, max_value=400.0, value=215.0, step=0.5, key="_sb_line",
-        )
-    current_minute = st.slider(
-        f"Kalan Dakika (0–{total_minutes})",
-        min_value=0, max_value=total_minutes,
-        value=total_minutes // 2, key="_sb_minute",
-    )
-
-    # ------------------------------------------------------------------ MENU 2
-    st.markdown("## 🧠 VERİYLE TAHMİN")
-
-    if st.button("🔄 FİKSTÜRÜ YENİLE", use_container_width=True):
-        st.session_state.schedule_signature = ""
-        _ensure_schedule()
-        st.success(f"Yüklendi → {len(st.session_state.schedule_df)} maç")
-
-    if st.button("🧪 BACKTEST SİMÜLASYONU", use_container_width=True):
-        if st.session_state.baseline_avg <= 0 or st.session_state.schedule_df.empty:
-            st.warning("Önce fikstür yüklenmeli.")
+        # Sezon placeholder / default
+        if league == "NBA":
+            _placeholder = "2024-25"
+        elif league == "EuroLeague":
+            _placeholder = "E2024"
         else:
-            with st.spinner("Backtest çalışıyor…"):
-                st.session_state.backtest_result = eng.backtest(
-                    df=st.session_state.schedule_df,
-                    baseline_avg=st.session_state.baseline_avg,
-                    total_minutes=total_minutes,
-                )
-            st.success("Backtest tamam.")
-
-    with st.expander("⏳ Tarihsel Derin Öğrenme", expanded=False):
-        historical_mode = st.checkbox(
-            "Aktifleştir", value=st.session_state.historical_mode, key="_sb_hist_mode"
+            _placeholder = "U2024"
+        season = st.text_input(
+            "Sezon",
+            value=st.session_state.season or _placeholder,
+            placeholder=_placeholder,
+            key="_sb_season",
         )
-        st.session_state.historical_mode = historical_mode
+        st.session_state.season = season or _placeholder
 
-        famous = df_lib.get_famous_games_for_league(league)
+        # Sezon Tipi (sadece NBA)
+        if league == "NBA":
+            _TYPES = ["Regular Season", "Playoffs"]
+            _type_idx = _TYPES.index(st.session_state.season_type) \
+                if st.session_state.season_type in _TYPES else 0
+            season_type = st.selectbox(
+                "Sezon Tipi", _TYPES, index=_type_idx,
+                format_func=lambda x: "🟢 Regular Season" if x == "Regular Season" else "🔴 Playoffs",
+                key="_sb_season_type",
+            )
+            st.session_state.season_type = season_type
+            # Akıllı context_tag öneri
+            if season_type == "Playoffs":
+                st.session_state.context_tag = "Playoff_Elimination_G7"
+
+        # Fikstür yükle
+        _ensure_schedule()
+
+        match_options = _format_match_options(
+            st.session_state.schedule_df, st.session_state.league
+        )
+        if match_options:
+            match_label = st.selectbox(
+                "Eşleşme", match_options, index=0, key="_sb_match"
+            )
+            match_idx = match_options.index(match_label)
+            st.session_state.selected_match = _extract_match(
+                st.session_state.schedule_df, match_idx, st.session_state.league
+            )
+            if st.session_state.baseline_avg <= 0 and not st.session_state.schedule_df.empty:
+                st.session_state.baseline_avg = df_lib.compute_schedule_baseline(
+                    st.session_state.schedule_df, st.session_state.league
+                )
+        else:
+            st.caption("⚠️ Fikstür boş. Veri kaynağına ulaşılamıyor olabilir.")
+            st.session_state.selected_match = None
+
+        st.button("🔄 Oranları Eş Zamanlı Doğrula", key="_sb_refresh",
+                  help="Fikstürü yeniden yükle")
+
+    else:
+        # Zaman Tüneli modu
+        st.markdown("##### Tarihsel Maç")
+        famous = df_lib.get_famous_games_for_league(st.session_state.league)
         if famous:
             labels = list(famous.keys())
             sel = st.selectbox("Ünlü Maç", labels, key="_sb_famous")
-            if st.button("⏩ ZAMAN TÜNELİNİ BAŞLAT", use_container_width=True, key="_sb_tt_start"):
+            if st.button("▶️ Zaman Tünelini Başlat", type="primary",
+                         use_container_width=True, key="_sb_tt_start"):
                 st.session_state.historical_label = sel
                 st.session_state.historical_quarters = df_lib.fetch_famous_game_quarters(sel)
                 st.session_state.current_quarter = 0
                 st.session_state.historical_running = True
+                st.session_state.historical_mode = True
                 st.session_state.engine.reset_learning()
         else:
-            st.caption("Bu lig için ünlü maç yok.")
+            st.caption("Bu lig için ünlü maç tanımlı değil.")
 
-    if st.button("🔁 MOTORU SIFIRLA", use_container_width=True, key="_sb_reset"):
-        st.session_state.engine.reset_learning()
-        st.session_state.current_quarter = 0
-        st.session_state.historical_running = False
-        st.session_state.historical_quarters = {}
-        st.session_state.order_log = st.session_state.order_log.iloc[0:0]
-        st.success("Motor ve emirler sıfırlandı.")
+    st.divider()
 
-    # ------------------------------------------------------------------ MENU 3
-    st.markdown("## ⚙️ AYARLAR")
+    # --- Ayarlar (expander) ---
+    with st.expander("⚙️ Ayarlar", expanded=False):
+        st.session_state.budget = st.number_input(
+            "💰 Kasa (₺)", min_value=100, max_value=1_000_000,
+            value=int(st.session_state.budget), step=500, key="_sb_budget"
+        )
+        st.session_state.odds = st.number_input(
+            "📈 Oran", min_value=1.01, max_value=5.00,
+            value=float(st.session_state.odds), step=0.01, key="_sb_odds"
+        )
 
-    ctx_keys = list(cfg.CONTEXTUAL_MODIFIERS.keys())
-    default_ctx = st.session_state.get("context_tag", "Normal_Season_Match")
-    if default_ctx not in ctx_keys:
-        default_ctx = "Normal_Season_Match"
-    context_tag = st.selectbox(
-        "Maç Bağlamı",
-        ctx_keys,
-        index=ctx_keys.index(default_ctx),
-        format_func=lambda k: f"{cfg.CONTEXTUAL_MODIFIERS[k]['emoji']} "
-                              f"{cfg.CONTEXTUAL_MODIFIERS[k]['label']}",
-        key="_sb_ctx",
-    )
-    st.session_state.context_tag = context_tag
-    ctx_meta = cfg.CONTEXTUAL_MODIFIERS[context_tag]
-    st.caption(
-        f"⏱️ Tempo ×{ctx_meta['pace_multiplier']:.2f} · "
-        f"📊 Varyans ×{ctx_meta['variance_multiplier']:.2f}  \n"
-        f"🏟️ {league}: tempo ×{cfg.get_league_pace(league):.2f}, "
-        f"varyans ×{cfg.get_league_variance(league):.2f}"
-    )
+        # Live input'lar sadece canlı modda
+        if st.session_state.mod == "canli":
+            st.session_state.market_line = st.number_input(
+                "🎯 Barem", min_value=80.0, max_value=400.0,
+                value=float(st.session_state.market_line), step=0.5, key="_sb_line"
+            )
+            st.session_state.current_score = st.number_input(
+                "🏀 Skor", min_value=0, max_value=400,
+                value=int(st.session_state.current_score), step=1, key="_sb_score"
+            )
+            _tm = cfg.get_total_minutes(st.session_state.league)
+            st.session_state.total_minutes = _tm
+            current_minute = st.slider(
+                f"⏱️ Kalan Dakika (0–{_tm})",
+                min_value=0, max_value=_tm,
+                value=st.session_state.get("current_minute", _tm // 2),
+                key="_sb_minute",
+            )
+            st.session_state.current_minute = current_minute
+        else:
+            _tm = cfg.get_total_minutes(st.session_state.league)
+            st.session_state.total_minutes = _tm
+            current_minute = st.session_state.get("current_minute", _tm // 2)
+
+        # Maç Bağlamı
+        ctx_keys = list(cfg.CONTEXTUAL_MODIFIERS.keys())
+        _default_ctx = st.session_state.context_tag
+        if _default_ctx not in ctx_keys:
+            _default_ctx = "Normal_Season_Match"
+        _ctx_idx = ctx_keys.index(_default_ctx)
+        context_tag = st.selectbox(
+            "🧬 Maç Bağlamı", ctx_keys, index=_ctx_idx,
+            format_func=lambda k: f"{cfg.CONTEXTUAL_MODIFIERS[k]['emoji']} "
+                                  f"{cfg.CONTEXTUAL_MODIFIERS[k]['label']}",
+            key="_sb_ctx",
+        )
+        st.session_state.context_tag = context_tag
+        ctx_meta = cfg.CONTEXTUAL_MODIFIERS[context_tag]
+        st.caption(
+            f"Tempo ×{ctx_meta['pace_multiplier']:.2f} · "
+            f"Varyans ×{ctx_meta['variance_multiplier']:.2f}"
+        )
+
+        st.button("🔁 Motoru Sıfırla", key="_sb_reset",
+                  on_click=lambda: _reset_engine())
+
+
+def _reset_engine() -> None:
+    st.session_state.engine.reset_learning()
+    st.session_state.current_quarter = 0
+    st.session_state.historical_running = False
+    st.session_state.historical_quarters = {}
+    st.session_state.order_log = st.session_state.order_log.iloc[0:0]
+
+
+# Backtest handler (sidebar butonu)
+def _run_backtest() -> None:
+    if st.session_state.baseline_avg <= 0 or st.session_state.schedule_df.empty:
+        st.warning("Önce fikstür yüklenmeli.")
+        return
+    with st.spinner("Backtest çalışıyor…"):
+        st.session_state.backtest_result = eng.backtest(
+            df=st.session_state.schedule_df,
+            baseline_avg=st.session_state.baseline_avg,
+            total_minutes=st.session_state.total_minutes,
+        )
+    st.success("Backtest tamam.")
+
+
+# Backtest butonu canlı modda görünür
+if st.session_state.mod == "canli":
+    with st.sidebar:
+        st.button("🧪 Backtest", key="_sb_backtest", on_click=_run_backtest)
 
 
 # -----------------------------------------------------------------------------
-# Başlık
-# -----------------------------------------------------------------------------
-st.markdown("# 🏀 GoldenBet AI · Patron Komut Paneli")
-st.caption(
-    "NBA · EuroLeague · EuroCup — Adaptif Monte Carlo Motoru · "
-    "Logaritmik Kasa Yönetimi · Bilgi Yoğunluğuna Göre Emir"
-)
-
-
-# -----------------------------------------------------------------------------
-# Üst Metric Bar
+# Ana Ekran — Üst Bar (4 metric)
 # -----------------------------------------------------------------------------
 _match_label = (
     st.session_state.selected_match["label"]
-    if st.session_state.selected_match else "—"
+    if st.session_state.selected_match
+    else (st.session_state.historical_label or "—")
 )
+_match_delta = st.session_state.league
+
+# Kalan dakika (canlı modda slider, tünelde sabit)
+_tm = st.session_state.total_minutes
+_cur_min = st.session_state.get("current_minute", _tm // 2)
+_period_idx = min(4, max(0, int((_tm - _cur_min) / (_tm / 4)) + 1)) \
+    if _tm > 0 else 1
+_period_label = f"Q{_period_idx}" if _cur_min > 0 else "Final"
+
+# Delta için AI sapması
+_signal_delta = ""
+if st.session_state.last_prediction is not None and st.session_state.last_signal is not None:
+    _signal_delta = st.session_state.last_signal.get("diff", "")
+
+st.title("🏀 GoldenBet AI • Canlı Tahmin Merkezi")
+
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric(
-        "Aktif Eşleşme",
-        _match_label,
-        delta=st.session_state.league,
-    )
+    st.metric("Akan Maç", _match_label, delta=_match_delta)
 with col2:
-    spent = float(
-        st.session_state.prematch_orders["Tutar (₺)"].sum()
-        if not st.session_state.prematch_orders.empty
-        else 0.0
+    st.metric(
+        "Skor / Periyot",
+        f"{int(st.session_state.current_score)}",
+        delta=_period_label,
     )
-    if not st.session_state.order_log.empty and "Tutar (₺)" in st.session_state.order_log.columns:
-        spent = float(pd.to_numeric(
-            st.session_state.order_log["Tutar (₺)"], errors="coerce"
-        ).sum())
-    st.metric("Harcanan Kasa (₺)", f"{spent:,.2f}")
 with col3:
-    if st.session_state.last_prediction is not None:
-        pred_score = st.session_state.last_prediction.get("final_predicted_score", 0.0)
-        conf = st.session_state.last_prediction.get("confidence_pct")
-        conf_str = f"· Güven {conf:.1f}%" if conf is not None else ""
-        st.metric(
-            "AI Projeksiyon Skoru",
-            f"{pred_score:.1f}",
-            delta=f"Şu an {current_score} · Kalan {int(current_minute)} dk{conf_str}",
-        )
-    else:
-        st.metric("AI Projeksiyon Skoru", "—", delta=f"Kalan {int(current_minute)} dk")
+    st.metric("Kalan Süre", f"{int(_cur_min)} dk", delta="")
 with col4:
-    expected_pnl = 0.0
-    if st.session_state.last_prediction is not None and st.session_state.last_signal is not None:
-        conf = st.session_state.last_prediction.get("confidence_pct") or 0.0
-        sig = st.session_state.last_signal
-        if sig["order"] == "ÜST":
-            expected_pnl = (conf / 100.0) * (odds - 1.0) - (1.0 - conf / 100.0)
-        elif sig["order"] == "ALT (HEDGE)":
-            expected_pnl = 0.05
-        else:
-            expected_pnl = -0.01
-        expected_pnl = expected_pnl * budget
-    st.metric("Beklenen P&L (₺)", f"{expected_pnl:+,.2f}")
-
-
-# -----------------------------------------------------------------------------
-# Yapısal Kural Matrisi — Lig ve Bağlam Özeti
-# -----------------------------------------------------------------------------
-st.markdown("## 🧬 YAPISAL KURAL MATRİSİ (STRUCTURAL RULES)")
-_active_league = st.session_state.league
-_lg_var = cfg.get_league_variance(_active_league)
-_lg_pace = cfg.get_league_pace(_active_league)
-_lg_minutes = cfg.get_total_minutes(_active_league)
-_ctx_meta = cfg.CONTEXTUAL_MODIFIERS[context_tag]
-_lc1, _lc2, _lc3 = st.columns(3)
-with _lc1:
     st.metric(
-        f"{_active_league} · Temel Varyans",
-        f"×{_lg_var:.2f}",
-        delta=("Geniş dağılım" if _lg_var > 1.0
-               else "Dar dağılım" if _lg_var < 1.0 else "Standart"),
+        "Şirket Baremi",
+        f"{float(st.session_state.market_line):.1f}",
+        delta=_signal_delta or "—",
     )
-with _lc2:
-    st.metric(
-        "Lig Tempo Çarpanı",
-        f"×{_lg_pace:.2f}",
-        delta=f"{_lg_minutes} dk · "
-              f"{cfg.LEAGUE_PERIODS[_active_league]}× "
-              f"{cfg.LEAGUE_PERIOD_MINUTES[_active_league]} dk/çeyrek",
-    )
-with _lc3:
-    st.metric(
-        f"Bağlam · {ctx_meta['emoji']} {_ctx_meta['label']}",
-        f"Pace ×{_ctx_meta['pace_multiplier']:.2f}",
-        delta=f"Varyans ×{_ctx_meta['variance_multiplier']:.2f}",
-    )
-st.caption(f"🏟️ {_active_league} oyun akışı: {cfg.LEAGUE_TIMING_NOTES.get(_active_league, '')}")
+
+st.divider()
 
 
 # -----------------------------------------------------------------------------
-# Yapay Zeka Öğrenme Paneli
-# -----------------------------------------------------------------------------
-st.markdown("## 🧠 YAPAY ZEKA ÖĞRENME PANELİ (SELF-LEARNING MONITOR)")
-colA, colB, colC = st.columns(3)
-hist_df = st.session_state.engine.history_dataframe()
-with colA:
-    st.metric("Anlık Model Sapma (MAE)", f"{st.session_state.engine.current_mae():.2f}")
-with colB:
-    st.metric("Güncellenmiş Bias Weight", f"{st.session_state.engine.bias_weight:+.3f}")
-with colC:
-    st.metric("Variance Modifier", f"{st.session_state.engine.variance_modifier:.3f}")
-
-if not hist_df.empty:
-    st.markdown("##### Kalibrasyon Yakınsama Grafiği")
-    st.line_chart(hist_df.set_index("Çeyrek")[["Hata", "MAE"]], height=220)
-    with st.expander("📜 Öğrenme Günlüğü (tüm çeyrekler)"):
-        st.dataframe(hist_df, use_container_width=True, hide_index=True)
-else:
-    st.info("Henüz öğrenme verisi yok. Canlı modda tahmin üretin veya "
-            "tarihsel zaman tünelini başlatın.")
-
-
-# -----------------------------------------------------------------------------
-# Orta Neon Direktif Kutusu
+# Orta Neon Karar Kutusu + Kasa Yönetimi
 # -----------------------------------------------------------------------------
 prediction: Optional[Dict[str, Any]] = None
 signal: Optional[Dict[str, str]] = None
-context_tag = st.session_state.get("context_tag", "Normal_Season_Match")
-if (not st.session_state.historical_running
+context_tag = st.session_state.context_tag
+ctx_meta = cfg.CONTEXTUAL_MODIFIERS[context_tag]
+
+# Canlı modda reactive tahmin
+if (st.session_state.mod == "canli"
+        and not st.session_state.historical_running
         and st.session_state.baseline_avg > 0):
     prediction = st.session_state.engine.predict_remaining_game(
-        current_score=current_score,
-        current_minute=current_minute,
-        baseline_avg=st.session_state.baseline_avg,
-        bookmaker_line=market_line,
-        total_minutes=total_minutes,
+        current_score=int(st.session_state.current_score),
+        current_minute=int(_cur_min),
+        baseline_avg=float(st.session_state.baseline_avg),
+        bookmaker_line=float(st.session_state.market_line),
+        total_minutes=int(_tm),
         context_tag=context_tag,
         league=st.session_state.league,
     )
     st.session_state.last_prediction = prediction
     signal = eng.generate_signal(
         ai_pred=prediction["final_predicted_score"],
-        market_line=market_line,
+        market_line=float(st.session_state.market_line),
         confidence_pct=prediction.get("confidence_pct"),
     )
     st.session_state.last_signal = signal
     st.session_state.live_order = eng.build_live_order_plan(
-        budget=budget, signal=signal,
-        current_minute=current_minute,
-        total_minutes=total_minutes, odds=odds,
+        budget=float(st.session_state.budget),
+        signal=signal,
+        current_minute=int(_cur_min),
+        total_minutes=int(_tm),
+        odds=float(st.session_state.odds),
     )
+    # Emir defteri güncelle
     if not st.session_state.live_order.empty:
         live_row = st.session_state.live_order.iloc[0].to_dict()
         live_row["Zaman"] = time.strftime("%H:%M:%S")
         live_row["Not"] = (
             f"AI={prediction['final_predicted_score']:.1f} | "
-            f"Şirket={market_line:.1f} | Sapma={signal['diff']}"
+            f"Barem={float(st.session_state.market_line):.1f} | "
+            f"Sapma={signal['diff']}"
         )
         if not st.session_state.order_log.empty:
             mask = st.session_state.order_log["Faz"] == live_row["Faz"]
@@ -628,176 +634,223 @@ if (not st.session_state.historical_running
             [st.session_state.order_log, pd.DataFrame([live_row])],
             ignore_index=True,
         )
-    if (not st.session_state.prematch_orders.empty
-            and st.session_state.order_log.empty):
-        for _, row in st.session_state.prematch_orders.iterrows():
-            r = row.to_dict()
-            r["Zaman"] = time.strftime("%H:%M:%S")
-            r["Not"] = "Maç öncesi pusu merdiveni"
-            st.session_state.order_log = pd.concat(
-                [st.session_state.order_log, pd.DataFrame([r])],
-                ignore_index=True,
-            )
 
-if signal is not None and prediction is not None:
-    order_class = "tag-strong" if signal["order"] == "ÜST" else \
-                  "tag-hedge" if signal["order"].startswith("ALT") else "tag-pass"
-    if not st.session_state.live_order.empty:
-        amount = float(st.session_state.live_order.iloc[0]["Tutar (₺)"])
+# Zaman Tüneli modunda: mevcut çeyrek verisiyle tahmin üret
+elif st.session_state.mod == "zaman_tuneli" and st.session_state.historical_running:
+    quarters = st.session_state.historical_quarters
+    q_now = st.session_state.current_quarter
+    if 0 < q_now <= 4 and q_now in quarters:
+        cur_q_start_cum = quarters.get(q_now - 1, 0.0)
+        cur_q_end_cum = quarters[q_now]
+        per_q_minutes = _tm // 4
+        minute_at_q_end = per_q_minutes * q_now
+        baseline_for_q = float(st.session_state.baseline_avg) or 220.0
+        engine_obj: eng.AdaptiveMonteCarloEngine = st.session_state.engine
+        result = engine_obj.predict_remaining_game(
+            current_score=cur_q_start_cum,
+            current_minute=minute_at_q_end - per_q_minutes,
+            baseline_avg=baseline_for_q,
+            bookmaker_line=None,
+            total_minutes=per_q_minutes,
+            context_tag=context_tag,
+            league=st.session_state.league,
+        )
+        predicted_q_end = result["final_predicted_score"]
+        actual_q_end = cur_q_end_cum
+        engine_obj.update_learning_weights(
+            quarter=q_now,
+            predicted_at_quarter=predicted_q_end,
+            actual_at_quarter=actual_q_end,
+        )
+        st.session_state.last_prediction = result
+        signal = eng.generate_signal(
+            ai_pred=predicted_q_end,
+            market_line=actual_q_end,
+            confidence_pct=None,
+        )
+        st.session_state.last_signal = signal
+        prediction = result
+
+st.subheader("🔮 Yapay Zeka Karar Mekanizması")
+
+col_left, col_right = st.columns([2, 1])
+
+with col_left:
+    if signal is not None and prediction is not None:
+        order = signal["order"]
+        strength = signal.get("strength", "ZAYIF")
+        if order == "ÜST":
+            signal_class = "signal-strong"
+            badge = "🟢 GÜÇLÜ SİNYAL: ÜST (OVER)" if strength == "GÜÇLÜ" else "🟡 ÜST (OVER)"
+        elif order.startswith("ALT"):
+            signal_class = "signal-hedge"
+            badge = "🟠 ALT (UNDER) — HEDGE" if strength == "GÜÇLÜ" else "🟡 ALT (UNDER)"
+        else:
+            signal_class = "signal-pass"
+            badge = "⚪ PAS — FIRSAT YOK"
+
+        eff_base = prediction.get("effective_baseline", st.session_state.baseline_avg)
+        conf_pct = prediction.get("confidence_pct")
+        conf_str = f"%{conf_pct:.1f}" if conf_pct is not None else "—"
+        neon_html = f"""
+        <div class="neon-box {signal_class}">
+            <div class="neon-badge">{badge}</div>
+            <div class="neon-action">PROJEKSİYON: {prediction['final_predicted_score']:.1f}</div>
+            <div class="neon-sub">
+                Şirket Barem: <b>{float(st.session_state.market_line):.1f}</b> &nbsp;|&nbsp;
+                Güven: <b>{conf_str}</b> &nbsp;|&nbsp;
+                Oran: <b>{float(st.session_state.odds):.2f}</b>
+            </div>
+            <div class="neon-sub">
+                p10=<b>{prediction['p10']:.1f}</b> &nbsp;·&nbsp;
+                p50=<b>{prediction['p50']:.1f}</b> &nbsp;·&nbsp;
+                p90=<b>{prediction['p90']:.1f}</b>
+            </div>
+            <div class="neon-sub" style="margin-top:8px; font-size:0.78rem; color:#6B7280;">
+                {ctx_meta['emoji']} {ctx_meta['label']} &nbsp;|&nbsp;
+                Effective Baseline: <b>{eff_base:.1f}</b> &nbsp;|&nbsp;
+                Tempo ×{prediction.get('context_pace_multiplier', 1.0):.2f} &nbsp;|&nbsp;
+                Var ×{prediction.get('context_variance_multiplier', 1.0):.2f}
+            </div>
+        </div>
+        """
     else:
-        amount = 0.0
-    eff_base = prediction.get("effective_baseline", st.session_state.baseline_avg)
-    pace_str = f"Pace ×{prediction.get('context_pace_multiplier', 1.0):.2f}"
-    var_str = f"Var ×{prediction.get('context_variance_multiplier', 1.0):.2f}"
-    league_var = prediction.get("league_variance", 1.0)
-    ctx_emoji = ctx_meta.get("emoji", "")
-    ctx_label = ctx_meta.get("label", context_tag)
-    neon_html = f"""
-    <div class="neon-box">
-        <div class="neon-title">⚡ PATRON AKSİYON TALİMATI ⚡</div>
-        <div class="neon-action">
-            {amount:,.0f} ₺ &nbsp;·&nbsp; <span class="{order_class}">{signal['order']}</span>
+        neon_html = """
+        <div class="neon-box signal-pass">
+            <div class="neon-badge" style="color:#9CA3AF;">⏳ SİSTEM HAZIR DEĞİL</div>
+            <div class="neon-action" style="font-size:1.3rem; color:#9CA3AF;">
+                Soldan lig + sezon seçildiğinde fikstür otomatik yüklenir.
+            </div>
         </div>
-        <div class="neon-sub">
-            AI Tahmin: <b>{prediction['final_predicted_score']:.1f}</b> &nbsp;|&nbsp;
-            Piyasa: <b>{market_line:.1f}</b> &nbsp;|&nbsp;
-            Sapma: <b>{signal['diff']}</b> &nbsp;|&nbsp;
-            Güven: <b>{signal['confidence']}</b>
-        </div>
-        <div class="neon-sub" style="margin-top:8px;">
-            p10={prediction['p10']:.1f} · p50={prediction['p50']:.1f} · p90={prediction['p90']:.1f}
-        </div>
-        <div class="neon-sub" style="margin-top:10px; font-size:0.85rem; color:#6B7280;">
-            {ctx_emoji} {ctx_label} &nbsp;|&nbsp;
-            Effective Baseline: <b>{eff_base:.1f}</b> &nbsp;|&nbsp;
-            Lig Varyans ×{league_var:.2f} &nbsp;|&nbsp;
-            {pace_str} &nbsp;|&nbsp; {var_str}
-        </div>
+        """
+    st.markdown(neon_html, unsafe_allow_html=True)
+
+with col_right:
+    # Kasa Yönetimi kartı
+    if not st.session_state.live_order.empty:
+        _kurşun = float(st.session_state.live_order.iloc[0]["Tutar (₺)"])
+    elif signal is not None and prediction is not None:
+        # Tahmin varsa ama emir yoksa (PAS durumu) hesapla
+        try:
+            _kurşun = float(st.session_state.budget) * 0.0
+        except Exception:
+            _kurşun = 0.0
+    else:
+        _kurşun = 0.0
+
+    _kasa_orani = (_kurşun / float(st.session_state.budget) * 100.0) \
+        if float(st.session_state.budget) > 0 else 0.0
+    _pusu = max(0.0, float(st.session_state.budget) - _kurşun)
+
+    st.markdown(f"""
+    <div class="kasa-card">
+        <div class="kasa-title">💰 KASA YÖNETİMİ</div>
+        <h3>Önerilen Kurşun: {_kurşun:,.0f} ₺</h3>
+        <p>Mevcut Kasa Oranı: %{_kasa_orani:.1f}</p>
+        <p>Kalan Pusu Bütçesi: {_pusu:,.0f} ₺</p>
     </div>
-    """
-else:
-    neon_html = """
-    <div class="neon-box" style="border-color:#374151;">
-        <div class="neon-title" style="color:#9CA3AF;">⏳ SİSTEM HAZIR DEĞİL</div>
-        <div class="neon-sub">
-            Soldan lig + sezon seçildiğinde fikstür otomatik yüklenir.
-        </div>
-    </div>
-    """
-st.markdown(neon_html, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+    # Emirler (collapsed)
+    with st.expander("📋 Emirler", expanded=False):
+        log = st.session_state.order_log
+        if log.empty:
+            st.caption("Henüz emir yok.")
+        else:
+            st.dataframe(log, use_container_width=True, hide_index=True, height=220)
+
+    # Backtest sonucu (varsa)
+    bt = st.session_state.backtest_result
+    if bt and bt.get("total_simulations", 0) > 0:
+        with st.expander("🧪 Backtest Sonucu", expanded=False):
+            bm1, bm2 = st.columns(2)
+            bm1.metric("İsabet", f"{bt['hit_rate_pct']:.1f}%")
+            bm2.metric("ROI", f"{bt['roi_pct']:+.2f}%")
+
+st.divider()
 
 
 # -----------------------------------------------------------------------------
-# Tarihsel Zaman Tüneli
+# Alt: Öğrenme Monitörü (MAE grafiği + Bias/Variance)
 # -----------------------------------------------------------------------------
-if st.session_state.historical_mode and st.session_state.historical_running:
-    st.markdown("## ⏳ ZAMAN TÜNELİ · " + st.session_state.historical_label)
+st.subheader("🧠 Yapay Zeka Canlı Evrim Grafiği (Self-Learning)")
+
+col_g1, col_g2 = st.columns([3, 1])
+
+with col_g1:
+    hist_df = st.session_state.engine.history_dataframe()
+    if hist_df is None or hist_df.empty:
+        # Mock data: MAE yakınsama simülasyonu
+        chart_data = pd.DataFrame({
+            "Çeyrek": ["Maç Başı", "1. Çeyrek", "2. Çeyrek", "3. Çeyrek", "4. Çeyrek"],
+            "Model Hata Payı (MAE)": [22.4, 14.2, 8.5, 3.1, 0.8],
+        }).set_index("Çeyrek")
+        st.markdown('<div class="mae-card">', unsafe_allow_html=True)
+        st.caption("Örnek yakınsama — canlı veri gelince güncellenir.")
+        st.line_chart(chart_data, height=200)
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="mae-card">', unsafe_allow_html=True)
+        st.markdown("<h3>Model Hata Payı (MAE) — Yakınsama</h3>",
+                    unsafe_allow_html=True)
+        st.line_chart(
+            hist_df.set_index("Çeyrek")[["Hata", "MAE"]],
+            height=200,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+with col_g2:
+    st.markdown('<div class="mae-card">', unsafe_allow_html=True)
+    st.metric(
+        "Öğrenilmiş Sapma (Bias)",
+        f"{st.session_state.engine.bias_weight:+.3f}",
+        help="Modelin maçı ne kadar yukarı/aşağı kalibre ettiği",
+    )
+    st.metric(
+        "Oynaklık Katsayısı (Variance)",
+        f"{st.session_state.engine.variance_modifier:.3f}",
+        help="Monte Carlo dağılım genişliği",
+    )
+    if hist_df is not None and not hist_df.empty:
+        st.metric("Mevcut MAE", f"{st.session_state.engine.current_mae():.2f}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# -----------------------------------------------------------------------------
+# Zaman Tüneli Kontrolleri (sadece mod aktifken)
+# -----------------------------------------------------------------------------
+if (st.session_state.mod == "zaman_tuneli"
+        and st.session_state.historical_running
+        and st.session_state.historical_quarters):
+    st.divider()
+    st.subheader("⏳ Zaman Tüneli · " + st.session_state.historical_label)
     q_now = st.session_state.current_quarter
     quarters = st.session_state.historical_quarters
 
-    if quarters:
-        baseline_for_q = float(st.session_state.baseline_avg) or 220.0
-        c1, c2, c3 = st.columns([1, 1, 2])
-        with c1:
-            if st.button("▶ ADIM AT (Sonraki Çeyrek)", use_container_width=True):
-                if q_now < 4:
-                    st.session_state.current_quarter = q_now + 1
-        with c2:
-            auto = st.checkbox("🤖 OTOMATİK OYNAT (1.2s/adım)", value=False)
-        with c3:
-            st.progress(
-                min(q_now / 4.0, 1.0),
-                text=f"Çeyrek {q_now}/4 tamamlandı",
-            )
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        if st.button("▶ ADIM AT", key="_tt_step", use_container_width=True):
+            if q_now < 4:
+                st.session_state.current_quarter = q_now + 1
+    with c2:
+        auto = st.checkbox("🤖 OTO (1.2s)", key="_tt_auto", value=False)
+    with c3:
+        st.progress(
+            min(q_now / 4.0, 1.0),
+            text=f"Çeyrek {q_now}/4 tamamlandı",
+        )
 
-        if 0 < q_now <= 4 and q_now in quarters:
-            cur_q_start_cum = quarters.get(q_now - 1, 0.0)
-            cur_q_end_cum = quarters[q_now]
-            per_q_minutes = total_minutes // 4
-            minute_at_q_end = per_q_minutes * q_now
+    if 0 < q_now <= 4 and q_now in quarters:
+        cur_q_end_cum = quarters[q_now]
+        st.caption(
+            f"Q{q_now} sonu kümülatif skor: **{cur_q_end_cum:.1f}** | "
+            f"Bias: **{st.session_state.engine.bias_weight:+.3f}** | "
+            f"MAE: **{st.session_state.engine.current_mae():.2f}**"
+        )
 
-            engine_obj: eng.AdaptiveMonteCarloEngine = st.session_state.engine
-            result = engine_obj.predict_remaining_game(
-                current_score=cur_q_start_cum,
-                current_minute=minute_at_q_end - per_q_minutes,
-                baseline_avg=baseline_for_q,
-                bookmaker_line=None,
-                total_minutes=per_q_minutes,
-                context_tag=st.session_state.get("context_tag", "Normal_Season_Match"),
-                league=st.session_state.league,
-            )
-            predicted_q_end = result["final_predicted_score"]
-            actual_q_end = cur_q_end_cum
-            error = engine_obj.update_learning_weights(
-                quarter=q_now,
-                predicted_at_quarter=predicted_q_end,
-                actual_at_quarter=actual_q_end,
-            )
-            st.session_state.last_prediction = result
-            st.session_state.last_signal = eng.generate_signal(
-                ai_pred=predicted_q_end,
-                market_line=actual_q_end,
-                confidence_pct=None,
-            )
-            st.toast(
-                f"Q{q_now} → Model Eğitildi (Bias: {engine_obj.bias_weight:+.2f}, "
-                f"MAE: {engine_obj.current_mae():.2f})",
-                icon="🧠",
-            )
-
-            cc1, cc2, cc3, cc4 = st.columns(4)
-            cc1.metric(f"Q{q_now} Tahmin", f"{predicted_q_end:.1f}")
-            cc2.metric(f"Q{q_now} Gerçek", f"{actual_q_end:.1f}")
-            cc3.metric("Hata (Sapma)", f"{error:+.2f}")
-            cc4.metric("MAE", f"{engine_obj.current_mae():.2f}")
-
-        if auto and q_now < 4:
-            time.sleep(1.2)
-            st.session_state.current_quarter = q_now + 1
-            st.rerun()
-
-        if q_now >= 4:
-            st.success("🏁 Maç tamamlandı. Model tamamen kalibre edildi.")
-    else:
-        st.warning("Bu maçın çeyrek verisi yüklenemedi.")
-
-
-# -----------------------------------------------------------------------------
-# Alt: Canlı Portföy Emir Defteri
-# -----------------------------------------------------------------------------
-st.markdown("## 📋 CANLI PORTFÖY EMİR DEFTERİ")
-log = st.session_state.order_log
-if log.empty:
-    st.info("Henüz emir yok. Yukarıdaki slider'la oyna veya tarihsel modu başlat.")
-else:
-    st.dataframe(log, use_container_width=True, hide_index=True, height=300)
-
-
-# -----------------------------------------------------------------------------
-# Backtest Sonuçları
-# -----------------------------------------------------------------------------
-st.markdown("## 🧪 BACKTEST SONUÇLARI")
-bt = st.session_state.backtest_result
-if bt and bt.get("total_simulations", 0) > 0:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("İsabet Oranı", f"{bt['hit_rate_pct']:.1f}%")
-    c2.metric("ROI", f"{bt['roi_pct']:+.2f}%")
-    c3.metric("Simülasyon Sayısı", f"{bt['total_simulations']}")
-    c4.metric("Ortalama Sapma", f"{bt['avg_diff']:+.2f}")
-    with st.expander("Maç Detayları"):
-        st.dataframe(bt["details"], use_container_width=True, hide_index=True)
-else:
-    st.caption("Soldaki 🧪 BACKTEST SİMÜLASYONU butonu ile çalıştır.")
-
-
-# -----------------------------------------------------------------------------
-# Geçmiş Veri Önizleme
-# -----------------------------------------------------------------------------
-st.markdown("## 📚 GEÇMİŞ VERİ ÖNİZLEME")
-if st.session_state.df_history.empty:
-    st.caption("Soldan lig + sezon seçildiğinde fikstür burada görüntülenir.")
-else:
-    st.dataframe(
-        st.session_state.df_history.tail(15),
-        use_container_width=True, hide_index=True,
-    )
+    if auto and q_now < 4:
+        time.sleep(1.2)
+        st.session_state.current_quarter = q_now + 1
+        st.rerun()
+    if q_now >= 4:
+        st.success("🏁 Maç tamamlandı. Model tamamen kalibre edildi.")

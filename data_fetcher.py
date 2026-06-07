@@ -137,9 +137,15 @@ def fetch_nba_data(team_full_name: str, season: str = "2024-25") -> pd.DataFrame
 # -----------------------------------------------------------------------------
 # NBA Sezon Schedule (Tüm Maçlar)
 # -----------------------------------------------------------------------------
-def fetch_nba_season_schedule(season: str = "2024-25") -> pd.DataFrame:
+def fetch_nba_season_schedule(season: str = "2024-25",
+                            season_type: str = "Regular Season") -> pd.DataFrame:
     """
-    Belirtilen sezondaki TÜM NBA maçlarını tekilleştirilmiş şekilde döner.
+    Belirtilen sezondaki NBA maçlarını tekilleştirilmiş şekilde döner.
+
+    Parametreler
+    ------------
+    season      : "2024-25" formatında
+    season_type : "Regular Season" | "Playoffs"
 
     Her maç tek satır: GAME_ID, GAME_DATE, HOME, AWAY, HOME_PTS, AWAY_PTS,
     TOTAL, WINNER. Backtest ve eşleşme seçimi için kullanılır.
@@ -153,7 +159,7 @@ def fetch_nba_season_schedule(season: str = "2024-25") -> pd.DataFrame:
     try:
         finder = leaguegamefinder.LeagueGameFinder(
             season_nullable=season,
-            season_type_nullable="Regular Season",
+            season_type_nullable=season_type,
             league_id_nullable="00",
         )
         df = finder.get_data_frames()[0]
