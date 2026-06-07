@@ -16,6 +16,3 @@ font = "monospace"
 [client]
 toolbarMode = "minimal"
 showErrorDetails = true
-
-[browser]
-gatherUsageStats = false
