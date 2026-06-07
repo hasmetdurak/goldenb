@@ -12,3 +12,4 @@ data/cache/
 .DS_Store
 .idea/
 .vscode/
+model_weights.json

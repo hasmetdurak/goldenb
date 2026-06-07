@@ -1,21 +1,36 @@
 """
-GoldenBet AI - Monte Carlo Simülasyon ve Risk Çekirdeği
-========================================================
+GoldenBet AI - Dual Team Score Engine
+======================================
 
-AdaptiveMonteCarloEngine: 10.000 iterasyonlu Monte Carlo simülasyonu.
-Her çeyrek sonunda gerçek skorla karşılaştırma yaparak `bias_weight`
-ve `variance_modifier` parametrelerini logaritmik öğrenme katsayısı
-(`learning_rate`) ile kalibre eder. Bir sonraki tahmin, eğitilmiş
-dağılımla üretilir.
+İki takımın skorunu ayrı kanallardan simüle eden Monte Carlo motoru.
 
-Sinyal Algoritması:
-    * ÜST  → diff >= +2.0 VE confidence >= %65
-    * ALT  → diff <= -2.0
-    * PAS  → arada
+Her takım (Ev / Dep) kendi bias_weight ve variance_modifier parametresine
+sahiptir. Çeyrek sonlarinda güncellenir ve model_weights.json dosyasina
+yazilarak kalici hale getirilir.
+
+Kullanim
+--------
+    engine = DualTeamScoreEngine()
+    result = engine.predict_match_scoreboard(
+        current_home=0, current_away=0,
+        current_minute=0,
+        baseline_home_avg=110.0, baseline_away_avg=105.0,
+        total_minutes=48, context_tag="Normal_Season_Match",
+        league="NBA"
+    )
+    result["home_predicted"], result["away_predicted"], result["total_predicted"]
+    result["q1_home"], ... , result["q4_away"]
+    result["home_h1"], result["away_h1"]
+
+    # Ogre
+    engine.update_team_weights(quarter, pred_home, actual_home,
+                                pred_away, actual_away)
 """
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -25,437 +40,329 @@ import config as cfg
 
 
 # -----------------------------------------------------------------------------
-# Sabitler (Bilgi Yoğunluğuna Göre Logaritmik Kasa Dağılımı)
+# Sabitler
 # -----------------------------------------------------------------------------
-PREMATCH_BUDGET_SHARE = 0.50      # Toplam bütçenin maç öncesi pusuya giden kısmı
-LIVE_BUDGET_SHARE = 0.50          # Canlı nakit kurşunlara ayrılan kısım
-LADDER_LEVELS = 5                 # Maç öncesi merdiven kademe sayısı
-LADDER_HALF_SPREAD = 4.0          # Merdiven toplam yarı açıklığı (±4 → 5 kademe)
+DEFAULT_LEARNING_RATE = 0.15
+DEFAULT_N_ITER = 10_000
+DEFAULT_ODDS = 1.91
 
-OVER_THRESHOLD = 2.0              # AI_pred - piyasa >= +2.0 → ÜST
-UNDER_THRESHOLD = -2.0            # AI_pred - piyasa <= -2.0 → ALT (HEDGE)
-MIN_CONFIDENCE_PCT = 65.0         # Minimum güven endeksi (ÜST için)
+WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "model_weights.json")
 
-# Logaritmik kasa dağılımı — bilgi saflık katsayısı arttıkça pay büyür
-LIVE_PHASE_DISTRIBUTION: Dict[str, float] = {
-    "Q1_END": 0.10,
-    "Q2_END": 0.15,
-    "Q3_END": 0.25,
-    "LAST_2_MIN": 0.50,
+# Ceyrek agirliklari (NBA: Q2/Q4 yuksek tempo, Euro: daha dengeli)
+#   Bu agirliklar final dagilimindan ceyrek krilimlarina bolmek icindir.
+#   Toplam = 1.0 (her takim icin final = sum(q1..q4))
+QUARTER_WEIGHTS: Dict[str, List[float]] = {
+    "NBA":       [0.22, 0.27, 0.22, 0.29],
+    "EUROLEAGUE": [0.24, 0.26, 0.24, 0.26],
+    "EUROCUP":    [0.24, 0.26, 0.24, 0.26],
 }
 
-DEFAULT_ODDS = 1.91               # Bahis oranı varsayılanı (10/11 Avrupa baremi)
-
 
 # -----------------------------------------------------------------------------
-# Adaptive Monte Carlo Engine
+# Dual Team Score Engine
 # -----------------------------------------------------------------------------
-class AdaptiveMonteCarloEngine:
+class DualTeamScoreEngine:
     """
-    Öğrenen Monte Carlo motoru. `bias_weight` ve `variance_modifier`
-    parametreleri, her `update_learning_weights` çağrısında gerçek
-    ölçümlerle kalibre edilir.
+    Iki takimli Monte Carlo motoru.
+
+    Ev sahibi ve deplasman icin AYRI bias_weight ile variance_modifier
+    parametreleri ogrenilir ve model_weights.json dosyasinda kalici hale
+    getirilir.
     """
 
-    def __init__(self, learning_rate: float = 0.15, n_iter: int = 10_000) -> None:
+    def __init__(self, learning_rate: float = DEFAULT_LEARNING_RATE,
+                 n_iter: int = DEFAULT_N_ITER) -> None:
         self.learning_rate = learning_rate
         self.n_iter = n_iter
-        self.bias_weight: float = 0.0          # Nötr başlangıç
-        self.variance_modifier: float = 1.0   # Standart oynaklık
+
+        # Ev sahibi parametreleri
+        self.bias_home: float = 0.0
+        self.variance_modifier_home: float = 1.0
+
+        # Deplasman parametreleri
+        self.bias_away: float = 0.0
+        self.variance_modifier_away: float = 1.0
+
         self.learning_history: List[Dict[str, Any]] = []
 
-    # ----- Öğrenme -----
-    def update_learning_weights(self, quarter: int,
-                                predicted_at_quarter: float,
-                                actual_at_quarter: float) -> float:
-        """
-        Çeyrek sonu gerçek skoru tahminle karşılaştırıp bias/variance'ı kalibre eder.
-        Dönüş: ham hata (actual - predicted).
-        """
-        error = float(actual_at_quarter) - float(predicted_at_quarter)
-        # Logaritmik/çarpımsal öğrenme
-        self.bias_weight += error * self.learning_rate
-        # Varyans: hata büyükse dağılımı genişlet, küçükse daralt
-        if abs(error) > 5:
-            self.variance_modifier *= 1.1
-        else:
-            self.variance_modifier = max(0.4, self.variance_modifier * 0.9)
+        self.load_knowledge_from_code()
 
-        # MAE güncelle
-        mae = float(np.mean([abs(h["Hata"]) for h in self.learning_history] or [0.0]))
+    # ------------------------------------------------------------------
+    # Ogre
+    # ------------------------------------------------------------------
+    def update_team_weights(self, quarter: int,
+                            pred_home: float, actual_home: float,
+                            pred_away: float, actual_away: float) -> Dict[str, float]:
+        """
+        Her iki takim icin bias/variance guncellemesi.
+
+        Degerlendirme:
+            bias_home   += error_home * learning_rate
+            bias_away   += error_away * learning_rate
+            |error| > 3 => variance *= 1.10
+            |error| <=3 => variance = max(0.4, variance * 0.90)
+
+        Q4 sonrasi save_knowledge_to_code() cagrilir.
+        """
+        error_home = float(actual_home) - float(pred_home)
+        error_away = float(actual_away) - float(pred_away)
+
+        self.bias_home += error_home * self.learning_rate
+        self.bias_away += error_away * self.learning_rate
+
+        for vm_attr, err in (
+            ("variance_modifier_home", error_home),
+            ("variance_modifier_away", error_away),
+        ):
+            current = float(getattr(self, vm_attr))
+            if abs(err) > 3.0:
+                setattr(self, vm_attr, current * 1.10)
+            else:
+                setattr(self, vm_attr, max(0.4, current * 0.90))
+
+        all_errs = [
+            abs(h["Hata_Home"]) + abs(h["Hata_Away"])
+            for h in self.learning_history
+        ]
+        new_mae = (
+            (sum(all_errs) + abs(error_home) + abs(error_away))
+            / (len(all_errs) + 1)
+            if all_errs
+            else (abs(error_home) + abs(error_away)) / 2.0
+        )
+
         self.learning_history.append({
-            "Çeyrek": quarter,
-            "Tahmin": round(float(predicted_at_quarter), 2),
-            "Gerçek": round(float(actual_at_quarter), 2),
-            "Hata": round(error, 2),
-            "Bias_Weight": round(self.bias_weight, 3),
-            "Variance_Mod": round(self.variance_modifier, 3),
-            "MAE": round((mae * len(self.learning_history) + abs(error))
-                          / (len(self.learning_history) + 1), 3),
+            "Ceyrek": quarter,
+            "Tahmin_Home": round(float(pred_home), 2),
+            "Gercek_Home": round(float(actual_home), 2),
+            "Hata_Home": round(error_home, 2),
+            "Tahmin_Away": round(float(pred_away), 2),
+            "Gercek_Away": round(float(actual_away), 2),
+            "Hata_Away": round(error_away, 2),
+            "Bias_Home": round(self.bias_home, 3),
+            "Bias_Away": round(self.bias_away, 3),
+            "Variance_Home": round(self.variance_modifier_home, 3),
+            "Variance_Away": round(self.variance_modifier_away, 3),
+            "MAE": round(new_mae, 3),
         })
-        return error
 
-    # ----- Tahmin -----
-    def predict_remaining_game(self,
-                              current_score: float,
-                              current_minute: float,
-                              baseline_avg: float,
-                              bookmaker_line: Optional[float] = None,
-                              total_minutes: int = 40,
-                              context_tag: str = "Normal_Season_Match",
-                              league: Optional[str] = None) -> Dict[str, Any]:
+        if quarter >= 4:
+            self.save_knowledge_to_code()
+
+        return {"error_home": error_home, "error_away": error_away}
+
+    def current_mae(self) -> float:
+        if not self.learning_history:
+            return 0.0
+        return float(self.learning_history[-1].get("MAE", 0.0))
+
+    # ------------------------------------------------------------------
+    # Tahmin: Tam Skor Tabelasi (Final + 1H + 4 ceyrek)
+    # ------------------------------------------------------------------
+    def predict_match_scoreboard(self,
+                                 current_home: float,
+                                 current_away: float,
+                                 current_minute: float,
+                                 baseline_home_avg: float,
+                                 baseline_away_avg: float,
+                                 total_minutes: int = 40,
+                                 context_tag: str = "Normal_Season_Match",
+                                 league: str = "NBA") -> Dict[str, Any]:
         """
-        Eğitilmiş ağırlıklarla 10.000 iterasyonlu Monte Carlo koşturur.
+        10.000 iterasyonlu Monte Carlo ile full skor tabelasi uretir.
 
-        Yapısal kural matrisi uygulaması:
-            * Lig bazlı varyans (NBA=1.20, EuroLeague=0.85, EuroCup=0.90)
-            * Bağlam etiketi (context_tag) → pace_multiplier baseline'a,
-              variance_multiplier standart sapmaya uygulanır.
-            * Adaptif bias_weight / variance_modifier de eklenir.
-
-        Parametreler
-        ----------
-        current_score      : Şu anki kümülatif toplam skor
-        current_minute     : Şu anki maç dakikası (0..total_minutes)
-        baseline_avg       : Maç başına beklenen toplam skor (veri ortalaması)
-        bookmaker_line     : Piyasa ÜST/ALT baremi (opsiyonel)
-        total_minutes      : Maçın toplam dakikası (NBA=48, EuroLeague=40)
-        context_tag        : CONTEXTUAL_MODIFIERS anahtarı
-        league             : "NBA" | "EUROLEAGUE" | "EUROCUP" (opsiyonel)
+        Cikti:
+            home_predicted, away_predicted, total_predicted
+            home_h1, away_h1 (1. Yari)
+            q1_home, q1_away, q2_home, q2_away, q3_home, q3_away, q4_home, q4_away
+            p10/p50/p90 (final)
+            meta: bias/variance, context bilgisi, quarter_weights
         """
         remaining = max(0.0, float(total_minutes) - float(current_minute))
-        if remaining <= 0:
-            return {
-                "final_predicted_score": float(current_score),
-                "confidence_pct": 100.0,
-                "p10": float(current_score),
-                "p50": float(current_score),
-                "p90": float(current_score),
-                "distribution": np.array([float(current_score)]),
-                "bias_weight": self.bias_weight,
-                "variance_modifier": self.variance_modifier,
-                "context_tag": context_tag,
-                "league_variance": cfg.get_league_variance(league or ""),
-            }
 
-        # ---- Yapısal Kural Matrisi Katmanları ----
+        # --- Yapisal Kural Matrisi ---
         ctx = cfg.get_context_modifier(context_tag)
         pace_mult = float(ctx.get("pace_multiplier", 1.0))
         var_mult = float(ctx.get("variance_multiplier", 1.0))
-        league_var = cfg.get_league_variance(league or "")
-        league_pace = cfg.get_league_pace(league or "")
+        league_var = cfg.get_league_variance(league)
+        league_pace = cfg.get_league_pace(league)
 
-        # Tempo: lig × bağlam
-        effective_baseline = float(baseline_avg) * league_pace * pace_mult
-        base_per_minute = effective_baseline / float(total_minutes)
+        # Lig-bazli ceyrek agirliklari
+        q_weights = QUARTER_WEIGHTS.get(
+            league.upper() if league else "NBA",
+            QUARTER_WEIGHTS["NBA"],
+        )
 
-        # Eğitilmiş tempo — bias eklendi
-        adapted_mu = base_per_minute + (self.bias_weight / float(total_minutes))
+        if remaining <= 0:
+            home_total = float(current_home)
+            away_total = float(current_away)
+            total_total = home_total + away_total
+            q = {
+                "home_predicted": home_total,
+                "away_predicted": away_total,
+                "total_predicted": total_total,
+                "home_h1": home_total,
+                "away_h1": away_total,
+                "q1_home": home_total * q_weights[0],
+                "q1_away": away_total * q_weights[0],
+                "q2_home": home_total * q_weights[1],
+                "q2_away": away_total * q_weights[1],
+                "q3_home": home_total * q_weights[2],
+                "q3_away": away_total * q_weights[2],
+                "q4_home": home_total * q_weights[3],
+                "q4_away": away_total * q_weights[3],
+            }
+            return self._finalize(q, ctx, league_var, pace_mult, var_mult,
+                                  q_weights, league)
 
-        # Eğitilmiş oynaklık — adaptif × lig × bağlam × kalan-süre ölçeklemesi
-        adapted_sigma = (
+        eff_home = float(baseline_home_avg) * league_pace * pace_mult
+        eff_away = float(baseline_away_avg) * league_pace * pace_mult
+
+        home_per_min = eff_home / float(total_minutes)
+        away_per_min = eff_away / float(total_minutes)
+
+        home_mu = home_per_min + (self.bias_home / float(total_minutes))
+        away_mu = away_per_min + (self.bias_away / float(total_minutes))
+
+        home_sigma = (
             0.6
-            * self.variance_modifier
+            * self.variance_modifier_home
+            * league_var
+            * var_mult
+            * np.sqrt(remaining / 40.0)
+        )
+        away_sigma = (
+            0.6
+            * self.variance_modifier_away
             * league_var
             * var_mult
             * np.sqrt(remaining / 40.0)
         )
 
-        sim = np.random.normal(adapted_mu, adapted_sigma, self.n_iter) * remaining
-        finals = float(current_score) + sim
+        home_sim = np.random.normal(home_mu, max(home_sigma, 0.01), self.n_iter)
+        away_sim = np.random.normal(away_mu, max(away_sigma, 0.01), self.n_iter)
 
-        confidence_pct: Optional[float] = None
-        if bookmaker_line is not None:
-            confidence_pct = float((finals > float(bookmaker_line)).mean() * 100.0)
+        home_remaining = home_sim * remaining
+        away_remaining = away_sim * remaining
 
-        return {
-            "final_predicted_score": float(np.mean(finals)),
-            "confidence_pct": confidence_pct,
-            "p10": float(np.percentile(finals, 10)),
-            "p50": float(np.percentile(finals, 50)),
-            "p90": float(np.percentile(finals, 90)),
-            "distribution": finals,
-            "bias_weight": self.bias_weight,
-            "variance_modifier": self.variance_modifier,
-            "context_tag": context_tag,
-            "league_variance": league_var,
-            "context_pace_multiplier": pace_mult,
-            "context_variance_multiplier": var_mult,
-            "effective_baseline": round(effective_baseline, 2),
+        home_final = float(current_home) + home_remaining
+        away_final = float(current_away) + away_remaining
+        total_final = home_final + away_final
+
+        # Ceyrek dagilimi: Q1+Q2+Q3+Q4 = final (tutarlilik)
+        # Ornek: home_q = home_final{:, np.newaxis} * np.array(q_weights)
+        home_mean = float(np.mean(home_final))
+        away_mean = float(np.mean(away_final))
+        total_mean = float(np.mean(total_final))
+
+        q = {
+            "home_predicted": home_mean,
+            "away_predicted": away_mean,
+            "total_predicted": total_mean,
+            "home_h1": home_mean * (q_weights[0] + q_weights[1]),
+            "away_h1": away_mean * (q_weights[0] + q_weights[1]),
+            "q1_home": home_mean * q_weights[0],
+            "q1_away": away_mean * q_weights[0],
+            "q2_home": home_mean * q_weights[1],
+            "q2_away": away_mean * q_weights[1],
+            "q3_home": home_mean * q_weights[2],
+            "q3_away": away_mean * q_weights[2],
+            "q4_home": home_mean * q_weights[3],
+            "q4_away": away_mean * q_weights[3],
+            # Percentiles
+            "home_p10": float(np.percentile(home_final, 10)),
+            "home_p50": float(np.percentile(home_final, 50)),
+            "home_p90": float(np.percentile(home_final, 90)),
+            "away_p10": float(np.percentile(away_final, 10)),
+            "away_p50": float(np.percentile(away_final, 50)),
+            "away_p90": float(np.percentile(away_final, 90)),
+            "total_p10": float(np.percentile(total_final, 10)),
+            "total_p50": float(np.percentile(total_final, 50)),
+            "total_p90": float(np.percentile(total_final, 90)),
         }
+        return self._finalize(q, ctx, league_var, pace_mult, var_mult,
+                              q_weights, league)
 
-    # ----- Geçmiş erişimi -----
-    def history_dataframe(self) -> pd.DataFrame:
-        """Öğrenme geçmişini Pandas DataFrame olarak döndürür."""
-        if not self.learning_history:
-            return pd.DataFrame(
-                columns=["Çeyrek", "Tahmin", "Gerçek", "Hata",
-                         "Bias_Weight", "Variance_Mod", "MAE"]
+    def _finalize(self, q: Dict[str, Any],
+                  ctx: Dict[str, Any],
+                  league_var: float,
+                  pace_mult: float,
+                  var_mult: float,
+                  q_weights: List[float],
+                  league: str) -> Dict[str, Any]:
+        """Meta bilgileri ekleyerek dict'i tamamlar."""
+        q["effective_baseline_home"] = round(
+            q.get("home_predicted", 0) / 1.0, 2
+        )
+        q["effective_baseline_away"] = round(
+            q.get("away_predicted", 0) / 1.0, 2
+        )
+        q["bias_home"] = self.bias_home
+        q["bias_away"] = self.bias_away
+        q["variance_modifier_home"] = self.variance_modifier_home
+        q["variance_modifier_away"] = self.variance_modifier_away
+        q["context_tag"] = ctx.get("label", "")
+        q["context_emoji"] = ctx.get("emoji", "")
+        q["context_pace_multiplier"] = pace_mult
+        q["context_variance_multiplier"] = var_mult
+        q["league_variance"] = league_var
+        q["quarter_weights"] = q_weights
+        q["league"] = league
+        return q
+
+    # ------------------------------------------------------------------
+    # Kalici Hafiza
+    # ------------------------------------------------------------------
+    def save_knowledge_to_code(self) -> None:
+        """Bias/variance'i JSON dosyasina yazar. Hata durumunda no-op."""
+        try:
+            data = {
+                "bias_home": round(self.bias_home, 4),
+                "bias_away": round(self.bias_away, 4),
+                "variance_modifier_home": round(self.variance_modifier_home, 4),
+                "variance_modifier_away": round(self.variance_modifier_away, 4),
+                "learning_rate": self.learning_rate,
+                "n_iter": self.n_iter,
+            }
+            with open(WEIGHTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def load_knowledge_from_code(self) -> None:
+        """JSON'dan geri yukler. Dosya yoksa no-op."""
+        try:
+            if not os.path.exists(WEIGHTS_FILE):
+                return
+            with open(WEIGHTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.bias_home = float(data.get("bias_home", 0.0))
+            self.bias_away = float(data.get("bias_away", 0.0))
+            self.variance_modifier_home = float(
+                data.get("variance_modifier_home", 1.0)
             )
-        return pd.DataFrame(self.learning_history)
+            self.variance_modifier_away = float(
+                data.get("variance_modifier_away", 1.0)
+            )
+        except Exception:
+            pass
 
-    def current_mae(self) -> float:
-        """En son MAE değerini döndürür."""
-        if not self.learning_history:
-            return 0.0
-        return float(self.learning_history[-1].get("MAE", 0.0))
-
+    # ------------------------------------------------------------------
+    # Sifirlama ve Gecmis
+    # ------------------------------------------------------------------
     def reset_learning(self) -> None:
-        """Tüm öğrenilmiş ağırlıkları sıfırlar."""
-        self.bias_weight = 0.0
-        self.variance_modifier = 1.0
+        self.bias_home = 0.0
+        self.bias_away = 0.0
+        self.variance_modifier_home = 1.0
+        self.variance_modifier_away = 1.0
         self.learning_history = []
 
-
-# -----------------------------------------------------------------------------
-# Geriye Uyumluluk Helper'ı
-# -----------------------------------------------------------------------------
-def run_monte_carlo(current_score: float,
-                    current_minute: float,
-                    baseline_avg: float,
-                    bookmaker_line: float,
-                    n_iter: int = 10_000,
-                    total_minutes: int = 40,
-                    context_tag: str = "Normal_Season_Match",
-                    league: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Eski `run_monte_carlo` API'si. AdaptiveMonteCarloEngine'in nötr halini
-    kullanır (bias_weight=0, variance_modifier=1.0). Aynı sonuç verir.
-
-    Yeni parametreler: context_tag, league → Yapısal Kural Matrisi.
-    """
-    engine = AdaptiveMonteCarloEngine(learning_rate=0.15, n_iter=n_iter)
-    return engine.predict_remaining_game(
-        current_score=current_score,
-        current_minute=current_minute,
-        baseline_avg=baseline_avg,
-        bookmaker_line=bookmaker_line,
-        total_minutes=total_minutes,
-        context_tag=context_tag,
-        league=league,
-    )
-
-
-# -----------------------------------------------------------------------------
-# Sinyal Üretimi
-# -----------------------------------------------------------------------------
-def generate_signal(ai_pred: float,
-                    market_line: float,
-                    confidence_pct: Optional[float]) -> Dict[str, str]:
-    """
-    AI tahmini ile piyasa baremi arasındaki farka göre ÜST/ALT/PAS üretir.
-
-    Dönüş:
-        {"order": "ÜST"|"ALT (HEDGE)"|"PAS",
-         "strength": "GÜÇLÜ"|"KORUMA"|"ZAYIF",
-         "diff": str, "confidence": str}
-    """
-    try:
-        diff = float(ai_pred) - float(market_line)
-    except (TypeError, ValueError):
-        diff = 0.0
-    conf = float(confidence_pct) if confidence_pct is not None else 0.0
-
-    if diff >= OVER_THRESHOLD and conf >= MIN_CONFIDENCE_PCT:
-        return {
-            "order": "ÜST",
-            "strength": "GÜÇLÜ",
-            "diff": f"{diff:+.2f}",
-            "confidence": f"{conf:.1f}%",
-        }
-    if diff <= UNDER_THRESHOLD:
-        return {
-            "order": "ALT (HEDGE)",
-            "strength": "KORUMA",
-            "diff": f"{diff:+.2f}",
-            "confidence": f"{conf:.1f}%",
-        }
-    return {
-        "order": "PAS",
-        "strength": "ZAYIF",
-        "diff": f"{diff:+.2f}",
-        "confidence": f"{conf:.1f}%",
-    }
-
-
-# -----------------------------------------------------------------------------
-# Maç Öncesi Merdiven (5 Kademe) ve Canlı Emir Planı
-# -----------------------------------------------------------------------------
-def build_ladder_lines(baseline_total: float) -> List[float]:
-    """
-    Simetrik 5 kademeli merdiven baremlerini üretir.
-    Örnek: baseline=210 → [206.5, 208.5, 210.5, 212.5, 214.5]
-    """
-    base = float(baseline_total)
-    step = LADDER_HALF_SPREAD / ((LADDER_LEVELS - 1) / 2)  # 4/2 = 2.0
-    levels = [base + (i - 2) * step for i in range(LADDER_LEVELS)]
-    # 0.5 barem aralığına yuvarla
-    return [round(x * 2) / 2 for x in levels]
-
-
-def build_prematch_orders(budget: float,
-                          ladder_lines: List[float],
-                          odds: float = DEFAULT_ODDS) -> pd.DataFrame:
-    """
-    Maç öncesi %50 bütçeyi 5 eşit kademeye böler, her birini merdiven bareminde
-    ÜST yönünde planlar.
-    """
-    prematch_pool = float(budget) * PREMATCH_BUDGET_SHARE
-    per_ladder = prematch_pool / LADDER_LEVELS
-    rows = []
-    for i, line in enumerate(ladder_lines, start=1):
-        rows.append({
-            "Faz": "PRE-MATCH",
-            "Kademe": i,
-            "Barem": line,
-            "Tutar (₺)": round(per_ladder, 2),
-            "Oran": odds,
-            "Yön": "ÜST",
-            "Güç": "PUSU",
-        })
-    return pd.DataFrame(rows)
-
-
-def determine_live_phase(current_minute: float, total_minutes: int = 40) -> str:
-    """
-    Kalan dakikaya göre hangi fazda olduğumuzu belirler.
-    """
-    if total_minutes >= 48:  # NBA
-        per_q = 12
-    else:                   # EuroLeague/EuroCup
-        per_q = 10
-    last2_threshold = total_minutes - 2.0
-
-    if current_minute < per_q:
-        return "Q1_END"
-    if current_minute < 2 * per_q:
-        return "Q2_END"
-    if current_minute < 3 * per_q:
-        return "Q3_END"
-    if current_minute >= last2_threshold:
-        return "LAST_2_MIN"
-    # Çeyrekler arası
-    return "Q3_END"  # güvenli default
-
-
-def build_live_order_plan(budget: float,
-                          signal: Dict[str, str],
-                          current_minute: float,
-                          total_minutes: int = 40,
-                          odds: float = DEFAULT_ODDS) -> pd.DataFrame:
-    """
-    Canlı %50 bütçeyi mevcut faza göre dağıtır ve tek satırlık emir önerir.
-    """
-    live_pool = float(budget) * LIVE_BUDGET_SHARE
-    phase = determine_live_phase(current_minute, total_minutes)
-    share = LIVE_PHASE_DISTRIBUTION.get(phase, 0.10)
-    amount = live_pool * share
-
-    return pd.DataFrame([{
-        "Faz": phase,
-        "Kademe": "—",
-        "Barem": "—",
-        "Tutar (₺)": round(amount, 2),
-        "Oran": odds,
-        "Yön": signal.get("order", "PAS"),
-        "Güç": signal.get("strength", "ZAYIF"),
-    }])
-
-
-# -----------------------------------------------------------------------------
-# Backtest
-# -----------------------------------------------------------------------------
-def backtest(df: pd.DataFrame,
-             baseline_avg: float,
-             total_minutes: int = 48,
-             line_offset: float = 0.0,
-             n_iter: int = 5_000,
-             context_tag: str = "Normal_Season_Match",
-             league: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Geçmiş maçlar üzerinde motor koşturur, ÜST/ALT isabet oranı ve ROI hesaplar.
-
-    Her maç için varsayım: maç ortası (toplam_minutes/2) senaryosu ile
-    tahmin üretilir, barem `baseline_avg + line_offset` olur.
-
-    Yapısal kural matrisi: `context_tag` ve `league` ile her maça aynı
-    bağlamı uygular (varsayılan normal sezon). NBA vs EuroLeague
-    varyans farkı bu sayede backtest'e de yansır.
-
-    NBA için 'SAYI' (tek takım) → 2x ile maç toplamı tahmin edilir.
-    EuroLeague için 'TOPLAM' doğrudan kullanılır.
-    """
-    if df is None or df.empty or baseline_avg <= 0:
-        return {
-            "hit_rate_pct": 0.0,
-            "roi_pct": 0.0,
-            "total_simulations": 0,
-            "avg_diff": 0.0,
-            "details": pd.DataFrame(),
-        }
-
-    n = min(len(df), 60)  # performans için sınır
-    sample = df.tail(n).copy()
-
-    if "TOPLAM" in sample.columns:
-        actual_totals = pd.to_numeric(sample["TOPLAM"], errors="coerce").dropna()
-    elif "SAYI" in sample.columns:
-        actual_totals = (
-            pd.to_numeric(sample["SAYI"], errors="coerce").dropna() * 2.0
-        )
-    else:
-        return {
-            "hit_rate_pct": 0.0, "roi_pct": 0.0,
-            "total_simulations": 0, "avg_diff": 0.0,
-            "details": pd.DataFrame(),
-        }
-
-    engine = AdaptiveMonteCarloEngine(learning_rate=0.0, n_iter=n_iter)
-    market_line = float(baseline_avg) + float(line_offset)
-    half = float(total_minutes) / 2.0
-
-    hits = 0
-    diffs: List[float] = []
-    rows = []
-    for actual in actual_totals.tolist():
-        # "Şu an" senaryosu: maç ortası, skor=baseline/2
-        cur_score = float(baseline_avg) * (half / float(total_minutes))
-        pred = engine.predict_remaining_game(
-            current_score=cur_score,
-            current_minute=half,
-            baseline_avg=float(baseline_avg),
-            bookmaker_line=market_line,
-            total_minutes=int(total_minutes),
-            context_tag=context_tag,
-            league=league,
-        )
-        predicted = pred["final_predicted_score"]
-        # Bahis: tahmin piyasanın üstündeyse ÜST, altındaysa ALT
-        if predicted > market_line:
-            pick = "ÜST"
-        else:
-            pick = "ALT"
-        if pick == "ÜST" and actual > market_line:
-            hits += 1
-        elif pick == "ALT" and actual < market_line:
-            hits += 1
-        diffs.append(actual - predicted)
-        rows.append({
-            "Tahmin": round(predicted, 2),
-            "Gerçek": round(actual, 2),
-            "Piyasa": market_line,
-            "Seçim": pick,
-            "Sapma": round(actual - predicted, 2),
-        })
-
-    total = len(actual_totals)
-    hit_rate = (hits / total * 100.0) if total else 0.0
-    # ROI: 1.91 oranında isabet başına net +0.91 birim
-    roi = (hits * 0.91 - (total - hits)) / total * 100.0 if total else 0.0
-    return {
-        "hit_rate_pct": round(hit_rate, 2),
-        "roi_pct": round(roi, 2),
-        "total_simulations": total,
-        "avg_diff": round(float(np.mean(diffs)) if diffs else 0.0, 2),
-        "details": pd.DataFrame(rows),
-    }
+    def history_dataframe(self) -> pd.DataFrame:
+        if not self.learning_history:
+            return pd.DataFrame(columns=[
+                "Ceyrek", "Tahmin_Home", "Gercek_Home", "Hata_Home",
+                "Tahmin_Away", "Gercek_Away", "Hata_Away",
+                "Bias_Home", "Bias_Away",
+                "Variance_Home", "Variance_Away", "MAE",
+            ])
+        return pd.DataFrame(self.learning_history)

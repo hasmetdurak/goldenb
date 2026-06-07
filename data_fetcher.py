@@ -219,7 +219,8 @@ def fetch_euroleague_data(season_code: str = "E2024",
     Çıktı kolonları: HAFTA, EV_SAHIBI, DEPLASMAN, EV_SKOR, DEPLASMAN_SKOR, TOPLAM
     """
     empty = pd.DataFrame(
-        columns=["HAFTA", "EV_SAHIBI", "DEPLASMAN",
+        columns=["HAFTA", "GAME_CODE", "SEASON_CODE",
+                 "EV_SAHIBI", "DEPLASMAN",
                  "EV_SKOR", "DEPLASMAN_SKOR", "TOPLAM"]
     )
     url = f"{EUROLEAGUE_BASE_URL}/{competition}/seasons/{season_code}/games"
@@ -249,6 +250,8 @@ def fetch_euroleague_data(season_code: str = "E2024",
                 continue
             rows.append({
                 "HAFTA": int(g.get("round", 0)),
+                "GAME_CODE": int(g.get("code", 0) or 0),
+                "SEASON_CODE": season_code,
                 "EV_SAHIBI": local.get("name", "Unknown"),
                 "DEPLASMAN": road.get("name", "Unknown"),
                 "EV_SKOR": ev_skor,
@@ -302,6 +305,34 @@ def compute_schedule_baseline(df: pd.DataFrame, league: str) -> float:
         return val if val > 0 else 0.0
     except Exception:
         return 0.0
+
+
+def compute_team_baselines(df: pd.DataFrame, league: str) -> tuple[float, float]:
+    """
+    Sezon fikstüründen Ev ve Deplasman ortalama skorlarini ayri dondurur.
+
+    NBA       : HOME_PTS, AWAY_PTS kolonlari
+    Euro*     : EV_SKOR, DEPLASMAN_SKOR kolonlari
+
+    Donus: (home_baseline, away_baseline)
+    Hata / bos durumda (0.0, 0.0).
+    """
+    try:
+        if df is None or df.empty:
+            return (0.0, 0.0)
+        if league == "NBA":
+            if "HOME_PTS" not in df.columns or "AWAY_PTS" not in df.columns:
+                return (0.0, 0.0)
+            home = float(pd.to_numeric(df["HOME_PTS"], errors="coerce").mean())
+            away = float(pd.to_numeric(df["AWAY_PTS"], errors="coerce").mean())
+        else:
+            if "EV_SKOR" not in df.columns or "DEPLASMAN_SKOR" not in df.columns:
+                return (0.0, 0.0)
+            home = float(pd.to_numeric(df["EV_SKOR"], errors="coerce").mean())
+            away = float(pd.to_numeric(df["DEPLASMAN_SKOR"], errors="coerce").mean())
+        return (home if home > 0 else 0.0, away if away > 0 else 0.0)
+    except Exception:
+        return (0.0, 0.0)
 
 
 # -----------------------------------------------------------------------------
@@ -503,3 +534,34 @@ def get_famous_games_for_league(league: str) -> Dict[str, Dict[str, Any]]:
         label: meta for label, meta in FAMOUS_GAMES.items()
         if meta.get("league", "").upper() == key
     }
+
+
+def fetch_quarters_for_schedule_row(row: pd.Series, league: str) -> Dict[int, float]:
+    """
+    Schedule satırından çeyrek skorlarını çeker (NBA veya Euro).
+
+    NBA  : BoxScoreTraditionalV3 ile (game_id gerekir)
+    Euro : Boxscore endpoint'i ile (season_code + game_code gerekir)
+
+    Hata/boş durumda {} döner.
+    """
+    try:
+        if league == "NBA":
+            gid = str(row.get("GAME_ID", ""))
+            if not gid:
+                return {}
+            return fetch_historical_nba_quarters(gid)
+        if league in ("EuroLeague", "EuroCup"):
+            comp = "E" if league == "EuroLeague" else "U"
+            season_code = str(row.get("SEASON_CODE", "") or "")
+            game_code = int(row.get("GAME_CODE", 0) or 0)
+            if not season_code or game_code <= 0:
+                return {}
+            return fetch_historical_euroleague_quarters(
+                season_code=season_code,
+                game_code=game_code,
+                competition=comp,
+            )
+    except Exception:
+        return {}
+    return {}
