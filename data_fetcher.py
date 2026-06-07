@@ -135,6 +135,74 @@ def fetch_nba_data(team_full_name: str, season: str = "2024-25") -> pd.DataFrame
 
 
 # -----------------------------------------------------------------------------
+# NBA Sezon Schedule (Tüm Maçlar)
+# -----------------------------------------------------------------------------
+def fetch_nba_season_schedule(season: str = "2024-25") -> pd.DataFrame:
+    """
+    Belirtilen sezondaki TÜM NBA maçlarını tekilleştirilmiş şekilde döner.
+
+    Her maç tek satır: GAME_ID, GAME_DATE, HOME, AWAY, HOME_PTS, AWAY_PTS,
+    TOTAL, WINNER. Backtest ve eşleşme seçimi için kullanılır.
+    """
+    empty = pd.DataFrame(columns=[
+        "GAME_ID", "GAME_DATE", "HOME", "AWAY",
+        "HOME_PTS", "AWAY_PTS", "TOTAL", "WINNER",
+    ])
+    if not _NBA_API_AVAILABLE:
+        return empty
+    try:
+        finder = leaguegamefinder.LeagueGameFinder(
+            season_nullable=season,
+            season_type_nullable="Regular Season",
+            league_id_nullable="00",
+        )
+        df = finder.get_data_frames()[0]
+        if df is None or df.empty:
+            return empty
+
+        rows: list[dict] = []
+        for game_id, gdf in df.groupby("GAME_ID"):
+            if len(gdf) < 2:
+                continue
+            home_row = gdf[gdf["MATCHUP"].astype(str).str.contains("vs.", na=False)]
+            away_row = gdf[gdf["MATCHUP"].astype(str).str.contains("@", na=False)]
+            if home_row.empty or away_row.empty:
+                continue
+            h = home_row.iloc[0]
+            a = away_row.iloc[0]
+            matchup = str(h["MATCHUP"])
+            home_abbr = away_abbr = None
+            for sep in [" vs. ", " @ "]:
+                if sep in matchup:
+                    parts = matchup.split(sep)
+                    if len(parts) == 2:
+                        home_abbr, away_abbr = parts
+                        break
+            if not home_abbr:
+                continue
+            try:
+                home_pts = int(h["PTS"])
+                away_pts = int(a["PTS"])
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "GAME_ID": game_id,
+                "GAME_DATE": pd.to_datetime(h["GAME_DATE"], errors="coerce"),
+                "HOME": home_abbr,
+                "AWAY": away_abbr,
+                "HOME_PTS": home_pts,
+                "AWAY_PTS": away_pts,
+                "TOTAL": home_pts + away_pts,
+                "WINNER": home_abbr if home_pts > away_pts else away_abbr,
+            })
+        if not rows:
+            return empty
+        return pd.DataFrame(rows).sort_values("GAME_DATE").reset_index(drop=True)
+    except Exception:
+        return empty
+
+
+# -----------------------------------------------------------------------------
 # EuroLeague / EuroCup
 # -----------------------------------------------------------------------------
 def fetch_euroleague_data(season_code: str = "E2024",
@@ -208,6 +276,26 @@ def compute_team_baseline(df: pd.DataFrame, mode: str) -> float:
     except Exception:
         return 0.0
     return 0.0
+
+
+def compute_schedule_baseline(df: pd.DataFrame, league: str) -> float:
+    """
+    Sezon fikstüründen (tüm maçlar) maç başına ortalama TOPLAM skoru döndürür.
+
+    NBA       : 'TOTAL' kolonu
+    Euro*     : 'TOPLAM' kolonu
+    Hata/boş ise 0.0 döner.
+    """
+    try:
+        if df is None or df.empty:
+            return 0.0
+        col = "TOTAL" if league == "NBA" else "TOPLAM"
+        if col not in df.columns:
+            return 0.0
+        val = float(pd.to_numeric(df[col], errors="coerce").mean())
+        return val if val > 0 else 0.0
+    except Exception:
+        return 0.0
 
 
 # -----------------------------------------------------------------------------
