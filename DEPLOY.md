@@ -51,12 +51,16 @@ Dokploy'da servis tipini `App` yerine `Compose` seç, `docker-compose.yml` yolun
 ### 2) Environment Variables (Dokploy → Service → Env)
 ```
 INSTALL_LIVE_DEPS=true
+ODDS_API_KEY=<the-odds-api.com ücretsiz anahtarın>
 POSTGRES_DB=goldenb
 POSTGRES_USER=goldenb
 POSTGRES_PASSWORD=<güçlü-rastgele-şifre>
 DATABASE_URL=postgresql://goldenb:<şifre>@postgres:5432/goldenb
 REDIS_URL=redis://redis:6379/0
 ```
+
+`ODDS_API_KEY` — the-odds-api.com'da ücretsiz hesap açınca 500 kota/ay gelir.
+Boş bırakılırsa bahis simülasyonu sessizce manuel-odds moduna düşer (çökmez).
 
 ### 3) Resource Limits
 | Servis | Memory | CPU |
@@ -93,6 +97,8 @@ INSTALL_LIVE_DEPS=true docker compose --profile live up --build
 | EuroLeague 403 | `EUROLEAGUE_HEADERS` zaten kodda, dokunma; VPN/firewall kontrol et |
 | Postgres bağlanmıyor | DATABASE_URL doğru mu? Container adı `postgres` (compose service adı) |
 | Redis bağlanmıyor | REDIS_URL doğru mu? Container adı `redis` |
+| Bahis marketleri gelmiyor | `ODDS_API_KEY` set edilmiş mi? Kota bitmiş olabilir (`odds_fetcher.fetch_totals_events_cached` loglarını kontrol et → `x-requests-remaining`) |
+| Canlı skor poll çalışmıyor | Bugünkü maç listesi boş mu? NBA için `data_fetcher.fetch_nba_today_games()`; EuroLeague için `fetch_euroleague_today_games()` test et |
 | `db.py` veya `cache.py` NoOp dönüyor | Servisler ayakta mı? `db.is_available()` / `cache.is_available()` ile test et |
 
 ## Ölçeklendirme Yol Haritası

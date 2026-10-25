@@ -31,13 +31,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 import config as cfg
-
 
 # -----------------------------------------------------------------------------
 # Sabitler
@@ -51,10 +50,10 @@ WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "model_weights.json")
 # Ceyrek agirliklari (NBA: Q2/Q4 yuksek tempo, Euro: daha dengeli)
 #   Bu agirliklar final dagilimindan ceyrek krilimlarina bolmek icindir.
 #   Toplam = 1.0 (her takim icin final = sum(q1..q4))
-QUARTER_WEIGHTS: Dict[str, List[float]] = {
-    "NBA":       [0.22, 0.27, 0.22, 0.29],
+QUARTER_WEIGHTS: dict[str, list[float]] = {
+    "NBA": [0.22, 0.27, 0.22, 0.29],
     "EUROLEAGUE": [0.24, 0.26, 0.24, 0.26],
-    "EUROCUP":    [0.24, 0.26, 0.24, 0.26],
+    "EUROCUP": [0.24, 0.26, 0.24, 0.26],
 }
 
 
@@ -70,8 +69,9 @@ class DualTeamScoreEngine:
     getirilir.
     """
 
-    def __init__(self, learning_rate: float = DEFAULT_LEARNING_RATE,
-                 n_iter: int = DEFAULT_N_ITER) -> None:
+    def __init__(
+        self, learning_rate: float = DEFAULT_LEARNING_RATE, n_iter: int = DEFAULT_N_ITER
+    ) -> None:
         self.learning_rate = learning_rate
         self.n_iter = n_iter
 
@@ -83,16 +83,21 @@ class DualTeamScoreEngine:
         self.bias_away: float = 0.0
         self.variance_modifier_away: float = 1.0
 
-        self.learning_history: List[Dict[str, Any]] = []
+        self.learning_history: list[dict[str, Any]] = []
 
         self.load_knowledge_from_code()
 
     # ------------------------------------------------------------------
     # Ogre
     # ------------------------------------------------------------------
-    def update_team_weights(self, quarter: int,
-                            pred_home: float, actual_home: float,
-                            pred_away: float, actual_away: float) -> Dict[str, float]:
+    def update_team_weights(
+        self,
+        quarter: int,
+        pred_home: float,
+        actual_home: float,
+        pred_away: float,
+        actual_away: float,
+    ) -> dict[str, float]:
         """
         Her iki takim icin bias/variance guncellemesi.
 
@@ -116,35 +121,34 @@ class DualTeamScoreEngine:
         ):
             current = float(getattr(self, vm_attr))
             if abs(err) > 3.0:
-                setattr(self, vm_attr, current * 1.10)
+                # Tavan clamp: sonsuz buyume yerine doygunluk
+                setattr(self, vm_attr, min(cfg.VARIANCE_MODIFIER_CEILING, current * 1.10))
             else:
                 setattr(self, vm_attr, max(0.4, current * 0.90))
 
-        all_errs = [
-            abs(h["Hata_Home"]) + abs(h["Hata_Away"])
-            for h in self.learning_history
-        ]
+        all_errs = [abs(h["Hata_Home"]) + abs(h["Hata_Away"]) for h in self.learning_history]
         new_mae = (
-            (sum(all_errs) + abs(error_home) + abs(error_away))
-            / (len(all_errs) + 1)
+            (sum(all_errs) + abs(error_home) + abs(error_away)) / (len(all_errs) + 1)
             if all_errs
             else (abs(error_home) + abs(error_away)) / 2.0
         )
 
-        self.learning_history.append({
-            "Ceyrek": quarter,
-            "Tahmin_Home": round(float(pred_home), 2),
-            "Gercek_Home": round(float(actual_home), 2),
-            "Hata_Home": round(error_home, 2),
-            "Tahmin_Away": round(float(pred_away), 2),
-            "Gercek_Away": round(float(actual_away), 2),
-            "Hata_Away": round(error_away, 2),
-            "Bias_Home": round(self.bias_home, 3),
-            "Bias_Away": round(self.bias_away, 3),
-            "Variance_Home": round(self.variance_modifier_home, 3),
-            "Variance_Away": round(self.variance_modifier_away, 3),
-            "MAE": round(new_mae, 3),
-        })
+        self.learning_history.append(
+            {
+                "Ceyrek": quarter,
+                "Tahmin_Home": round(float(pred_home), 2),
+                "Gercek_Home": round(float(actual_home), 2),
+                "Hata_Home": round(error_home, 2),
+                "Tahmin_Away": round(float(pred_away), 2),
+                "Gercek_Away": round(float(actual_away), 2),
+                "Hata_Away": round(error_away, 2),
+                "Bias_Home": round(self.bias_home, 3),
+                "Bias_Away": round(self.bias_away, 3),
+                "Variance_Home": round(self.variance_modifier_home, 3),
+                "Variance_Away": round(self.variance_modifier_away, 3),
+                "MAE": round(new_mae, 3),
+            }
+        )
 
         if quarter >= 4:
             self.save_knowledge_to_code()
@@ -159,23 +163,45 @@ class DualTeamScoreEngine:
     # ------------------------------------------------------------------
     # Tahmin: Tam Skor Tabelasi (Final + 1H + 4 ceyrek)
     # ------------------------------------------------------------------
-    def predict_match_scoreboard(self,
-                                 current_home: float,
-                                 current_away: float,
-                                 current_minute: float,
-                                 baseline_home_avg: float,
-                                 baseline_away_avg: float,
-                                 total_minutes: int = 40,
-                                 context_tag: str = "Normal_Season_Match",
-                                 league: str = "NBA") -> Dict[str, Any]:
+    def predict_match_scoreboard(
+        self,
+        current_home: float,
+        current_away: float,
+        current_minute: float,
+        baseline_home_avg: float,
+        baseline_away_avg: float,
+        total_minutes: int = 40,
+        context_tag: str = "Normal_Season_Match",
+        league: str = "NBA",
+        market_line: float | None = None,
+        *,
+        is_b2b_home: bool = False,
+        is_b2b_away: bool = False,
+        prev_match_was_ot: bool = False,
+        next_match_importance: str = "normal",
+        loss_tolerability: str = "low",
+        rotation_active: bool = False,
+        home_in_bonus: bool = False,
+        away_in_bonus: bool = False,
+    ) -> dict[str, Any]:
         """
         10.000 iterasyonlu Monte Carlo ile full skor tabelasi uretir.
+
+        Fikstür Topolojisi (TopologyAware katman):
+            * is_b2b_* / prev_match_was_ot  → yorgunluk tempo düşüşü
+            * next_match_importance + loss_tolerability + rotation_active
+              → efor katsayısı (her iki taraf için simetrik)
+            * *_in_bonus → kalan süre hücum verim artışı (yalnız mu çarpanı;
+              mevcut skoru asla çarpma hatası yapılmaz)
 
         Cikti:
             home_predicted, away_predicted, total_predicted
             home_h1, away_h1 (1. Yari)
             q1_home, q1_away, q2_home, q2_away, q3_home, q3_away, q4_home, q4_away
             p10/p50/p90 (final)
+            prob_over_market / prob_under_market / prob_home_ml
+              (market_line verildiyse tam Monte Carlo olasiliklari)
+            topology: farkli carpilan katsayilarin ozeti
             meta: bias/variance, context bilgisi, quarter_weights
         """
         remaining = max(0.0, float(total_minutes) - float(current_minute))
@@ -188,10 +214,39 @@ class DualTeamScoreEngine:
         league_pace = cfg.get_league_pace(league)
 
         # Lig-bazli ceyrek agirliklari
-        q_weights = QUARTER_WEIGHTS.get(
-            league.upper() if league else "NBA",
-            QUARTER_WEIGHTS["NBA"],
-        )
+        q_weights = QUARTER_WEIGHTS.get(league.upper() if league else "NBA", QUARTER_WEIGHTS["NBA"])
+
+        # --- Fikstür Topolojisi katsayilari ---
+        fatigue_h = fatigue_a = 1.0
+        if is_b2b_home:
+            fatigue_h *= cfg.TOPOLOGY_B2B_BACKOFF
+            if prev_match_was_ot:
+                fatigue_h *= cfg.TOPOLOGY_OT_FATIGUE
+        if is_b2b_away:
+            fatigue_a *= cfg.TOPOLOGY_B2B_BACKOFF
+            if prev_match_was_ot:
+                fatigue_a *= cfg.TOPOLOGY_OT_FATIGUE
+
+        effort_h = effort_a = 1.0
+        if next_match_importance == "critical" and loss_tolerability == "high":
+            degradation = (
+                cfg.TOPOLOGY_EFFORT_ROTATION if rotation_active else cfg.TOPOLOGY_EFFORT_CRITICAL
+            )
+            effort_h = effort_a = degradation
+
+        bonus_h = cfg.TOPOLOGY_BONUS_BOOST_HOME if home_in_bonus else 1.0
+        bonus_a = cfg.TOPOLOGY_BONUS_BOOST_AWAY if away_in_bonus else 1.0
+        topo_pace_h = fatigue_h * effort_h * bonus_h
+        topo_pace_a = fatigue_a * effort_a * bonus_a
+        topology_meta = {
+            "fatigue_home": round(fatigue_h, 4),
+            "fatigue_away": round(fatigue_a, 4),
+            "effort_home": effort_h,
+            "effort_away": effort_a,
+            "bonus_home": bonus_h,
+            "bonus_away": bonus_a,
+            "status": "OPTIMIZED_WITH_SCHEDULE_LEVERAGE",
+        }
 
         if remaining <= 0:
             home_total = float(current_home)
@@ -212,8 +267,23 @@ class DualTeamScoreEngine:
                 "q4_home": home_total * q_weights[3],
                 "q4_away": away_total * q_weights[3],
             }
-            return self._finalize(q, ctx, league_var, pace_mult, var_mult,
-                                  q_weights, league)
+            if market_line is not None:
+                line = float(market_line)
+                q["prob_over_market"] = 1.0 if total_total > line else 0.0
+                q["prob_under_market"] = 1.0 - q["prob_over_market"]
+                q["prob_home_ml"] = 1.0 if home_total > away_total else 0.0
+            return self._finalize(
+                q,
+                ctx,
+                league_var,
+                pace_mult,
+                var_mult,
+                q_weights,
+                league,
+                baseline_home_avg,
+                baseline_away_avg,
+                topology_meta,
+            )
 
         eff_home = float(baseline_home_avg) * league_pace * pace_mult
         eff_away = float(baseline_away_avg) * league_pace * pace_mult
@@ -221,22 +291,24 @@ class DualTeamScoreEngine:
         home_per_min = eff_home / float(total_minutes)
         away_per_min = eff_away / float(total_minutes)
 
-        home_mu = home_per_min + (self.bias_home / float(total_minutes))
-        away_mu = away_per_min + (self.bias_away / float(total_minutes))
+        # Canli faz harmani (t > 0): %70 canli tempo + %30 baseline projeksiyonu
+        if float(current_minute) > 0.0:
+            live_home_pace = float(current_home) / float(current_minute)
+            live_away_pace = float(current_away) / float(current_minute)
+            home_rate = 0.7 * live_home_pace + 0.3 * home_per_min
+            away_rate = 0.7 * live_away_pace + 0.3 * away_per_min
+        else:
+            home_rate = home_per_min
+            away_rate = away_per_min
+
+        home_mu = home_rate * topo_pace_h + (self.bias_home / float(total_minutes))
+        away_mu = away_rate * topo_pace_a + (self.bias_away / float(total_minutes))
 
         home_sigma = (
-            0.6
-            * self.variance_modifier_home
-            * league_var
-            * var_mult
-            * np.sqrt(remaining / 40.0)
+            0.6 * self.variance_modifier_home * league_var * var_mult * np.sqrt(remaining / 40.0)
         )
         away_sigma = (
-            0.6
-            * self.variance_modifier_away
-            * league_var
-            * var_mult
-            * np.sqrt(remaining / 40.0)
+            0.6 * self.variance_modifier_away * league_var * var_mult * np.sqrt(remaining / 40.0)
         )
 
         home_sim = np.random.normal(home_mu, max(home_sigma, 0.01), self.n_iter)
@@ -280,23 +352,45 @@ class DualTeamScoreEngine:
             "total_p50": float(np.percentile(total_final, 50)),
             "total_p90": float(np.percentile(total_final, 90)),
         }
-        return self._finalize(q, ctx, league_var, pace_mult, var_mult,
-                              q_weights, league)
+        if market_line is not None:
+            line = float(market_line)
+            q["prob_over_market"] = float(np.mean(total_final > line))
+            q["prob_under_market"] = float(np.mean(total_final < line))
+            q["prob_push_market"] = float(np.mean(total_final == line))
+            q["prob_home_ml"] = float(np.mean(home_final > away_final))
+        return self._finalize(
+            q,
+            ctx,
+            league_var,
+            pace_mult,
+            var_mult,
+            q_weights,
+            league,
+            baseline_home_avg,
+            baseline_away_avg,
+            topology_meta,
+        )
 
-    def _finalize(self, q: Dict[str, Any],
-                  ctx: Dict[str, Any],
-                  league_var: float,
-                  pace_mult: float,
-                  var_mult: float,
-                  q_weights: List[float],
-                  league: str) -> Dict[str, Any]:
+    def _finalize(
+        self,
+        q: dict[str, Any],
+        ctx: dict[str, Any],
+        league_var: float,
+        pace_mult: float,
+        var_mult: float,
+        q_weights: list[float],
+        league: str,
+        baseline_home_avg: float,
+        baseline_away_avg: float,
+        topology_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Meta bilgileri ekleyerek dict'i tamamlar."""
-        q["effective_baseline_home"] = round(
-            q.get("home_predicted", 0) / 1.0, 2
-        )
-        q["effective_baseline_away"] = round(
-            q.get("away_predicted", 0) / 1.0, 2
-        )
+        eff_home_proj = float(baseline_home_avg) * cfg.get_league_pace(league) * pace_mult
+        eff_away_proj = float(baseline_away_avg) * cfg.get_league_pace(league) * pace_mult
+        q["effective_baseline_home"] = round(eff_home_proj, 2)
+        q["effective_baseline_away"] = round(eff_away_proj, 2)
+        q["baseline_home_avg"] = round(float(baseline_home_avg), 2)
+        q["baseline_away_avg"] = round(float(baseline_away_avg), 2)
         q["bias_home"] = self.bias_home
         q["bias_away"] = self.bias_away
         q["variance_modifier_home"] = self.variance_modifier_home
@@ -308,6 +402,7 @@ class DualTeamScoreEngine:
         q["league_variance"] = league_var
         q["quarter_weights"] = q_weights
         q["league"] = league
+        q["topology"] = topology_meta or {}
         return q
 
     # ------------------------------------------------------------------
@@ -334,16 +429,12 @@ class DualTeamScoreEngine:
         try:
             if not os.path.exists(WEIGHTS_FILE):
                 return
-            with open(WEIGHTS_FILE, "r", encoding="utf-8") as f:
+            with open(WEIGHTS_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             self.bias_home = float(data.get("bias_home", 0.0))
             self.bias_away = float(data.get("bias_away", 0.0))
-            self.variance_modifier_home = float(
-                data.get("variance_modifier_home", 1.0)
-            )
-            self.variance_modifier_away = float(
-                data.get("variance_modifier_away", 1.0)
-            )
+            self.variance_modifier_home = float(data.get("variance_modifier_home", 1.0))
+            self.variance_modifier_away = float(data.get("variance_modifier_away", 1.0))
         except Exception:
             pass
 
@@ -359,10 +450,20 @@ class DualTeamScoreEngine:
 
     def history_dataframe(self) -> pd.DataFrame:
         if not self.learning_history:
-            return pd.DataFrame(columns=[
-                "Ceyrek", "Tahmin_Home", "Gercek_Home", "Hata_Home",
-                "Tahmin_Away", "Gercek_Away", "Hata_Away",
-                "Bias_Home", "Bias_Away",
-                "Variance_Home", "Variance_Away", "MAE",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "Ceyrek",
+                    "Tahmin_Home",
+                    "Gercek_Home",
+                    "Hata_Home",
+                    "Tahmin_Away",
+                    "Gercek_Away",
+                    "Hata_Away",
+                    "Bias_Home",
+                    "Bias_Away",
+                    "Variance_Home",
+                    "Variance_Away",
+                    "MAE",
+                ]
+            )
         return pd.DataFrame(self.learning_history)

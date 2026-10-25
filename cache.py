@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +26,19 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 # ---------------------------------------------------------------------------
 # Bağlantı Yönetimi
 # ---------------------------------------------------------------------------
-_client: Optional[Any] = None
+_client: Any | None = None
 
 
-def _get_client() -> Optional[Any]:
+def _get_client() -> Any | None:
     """Redis client'ını lazy yükler. Servis yoksa None döner."""
     global _client
     if _client is not None:
         return _client
     try:
         import redis as redis_lib
+
         _client = redis_lib.from_url(
-            REDIS_URL,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-            decode_responses=True,
+            REDIS_URL, socket_connect_timeout=2, socket_timeout=2, decode_responses=True
         )
         _client.ping()
         return _client
@@ -85,7 +83,7 @@ def k_anomaly_channel(league: str) -> str:
 # ---------------------------------------------------------------------------
 # CRUD Operasyonları
 # ---------------------------------------------------------------------------
-def cache_get(key: str) -> Optional[Any]:
+def cache_get(key: str) -> Any | None:
     """Anahtardaki JSON-decode edilmiş değeri döner; yoksa None."""
     client = _get_client()
     if client is None:
@@ -128,9 +126,7 @@ def cache_invalidate(pattern: str) -> int:
         return 0
 
 
-def rate_limit_check(api_name: str,
-                     max_calls: int,
-                     window_seconds: int) -> bool:
+def rate_limit_check(api_name: str, max_calls: int, window_seconds: int) -> bool:
     """
     Sliding-window rate limit. Bu saniye içinde max_calls'tan az çağrı
     yapıldıysa True döner ve sayacı 1 artırır. Aksi False.
@@ -153,7 +149,7 @@ def rate_limit_check(api_name: str,
         return True
 
 
-def publish_anomaly(league: str, payload: Dict[str, Any]) -> int:
+def publish_anomaly(league: str, payload: dict[str, Any]) -> int:
     """
     Anomali tespit edildiğinde pub/sub yayar (multi-worker senaryosu).
     Dönüş: abone sayısı (0 ise kimse dinlemiyor).
@@ -162,14 +158,13 @@ def publish_anomaly(league: str, payload: Dict[str, Any]) -> int:
     if client is None:
         return 0
     try:
-        return int(client.publish(k_anomaly_channel(league),
-                                  json.dumps(payload, default=str)))
+        return int(client.publish(k_anomaly_channel(league), json.dumps(payload, default=str)))
     except Exception as e:
         logger.warning("publish_anomaly başarısız: %s", e)
         return 0
 
 
-def cache_stats() -> Dict[str, Any]:
+def cache_stats() -> dict[str, Any]:
     """Bilgi paneli için Redis istatistikleri."""
     client = _get_client()
     if client is None:

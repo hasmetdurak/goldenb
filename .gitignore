@@ -13,3 +13,10 @@ data/cache/
 .idea/
 .vscode/
 model_weights.json
+strategy_config.json
+.pytest_cache/
+.coverage
+coverage.xml
+*.egg-info/
+dist/
+build/

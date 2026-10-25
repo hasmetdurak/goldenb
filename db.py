@@ -15,11 +15,11 @@ Kurulum:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
+
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -31,24 +31,24 @@ DB_USER = os.getenv("POSTGRES_USER", "goldenb")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "goldenb")
 
 DATABASE_URL = (
-    os.getenv("DATABASE_URL")
-    or f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    os.getenv("DATABASE_URL") or f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
 # ---------------------------------------------------------------------------
 # Bağlantı Yönetimi
 # ---------------------------------------------------------------------------
-_engine: Optional[Any] = None
+_engine: Any | None = None
 _schema_initialized: bool = False
 
 
-def _get_engine() -> Optional[Any]:
+def _get_engine() -> Any | None:
     """SQLAlchemy engine'ini lazy yükler. Servis yoksa None döner."""
     global _engine
     if _engine is not None:
         return _engine
     try:
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, text
+
         _engine = create_engine(
             DATABASE_URL,
             pool_pre_ping=True,
@@ -56,9 +56,9 @@ def _get_engine() -> Optional[Any]:
             max_overflow=5,
             connect_args={"connect_timeout": 3},
         )
-        # Hızlı sağlık testi
+        # Hızlı sağlık testi (SQLAlchemy 2.0 text() zorunlu)
         with _engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))
         return _engine
     except Exception as e:
         logger.warning("PostgreSQL bağlantısı kurulamadı: %s", e)
@@ -149,7 +149,7 @@ def _is_ready() -> bool:
 # ---------------------------------------------------------------------------
 # CRUD Operasyonları
 # ---------------------------------------------------------------------------
-def save_prediction(payload: Dict[str, Any]) -> Optional[int]:
+def save_prediction(payload: dict[str, Any]) -> int | None:
     """
     Bir tahmini predictions tablosuna yazar, dönüş: prediction_id veya None.
     """
@@ -160,22 +160,24 @@ def save_prediction(payload: Dict[str, Any]) -> Optional[int]:
         return None
     try:
         with eng.begin() as conn:
-            result = conn.exec_driver_sql(
-                """
-                INSERT INTO predictions
-                  (league, team, context_tag, phase, current_minute,
-                   current_score, baseline_avg, ai_predicted_score,
-                   market_line, confidence_pct, signal, strength,
-                   bias_weight, variance_modifier, stake_try, odds)
-                VALUES
-                  (%(league)s, %(team)s, %(context_tag)s, %(phase)s,
-                   %(current_minute)s, %(current_score)s, %(baseline_avg)s,
-                   %(ai_predicted_score)s, %(market_line)s,
-                   %(confidence_pct)s, %(signal)s, %(strength)s,
-                   %(bias_weight)s, %(variance_modifier)s,
-                   %(stake_try)s, %(odds)s)
-                RETURNING id
-                """,
+            result = conn.execute(
+                text(
+                    """
+                    INSERT INTO predictions
+                      (league, team, context_tag, phase, current_minute,
+                       current_score, baseline_avg, ai_predicted_score,
+                       market_line, confidence_pct, signal, strength,
+                       bias_weight, variance_modifier, stake_try, odds)
+                    VALUES
+                      (:league, :team, :context_tag, :phase,
+                       :current_minute, :current_score, :baseline_avg,
+                       :ai_predicted_score, :market_line,
+                       :confidence_pct, :signal, :strength,
+                       :bias_weight, :variance_modifier,
+                       :stake_try, :odds)
+                    RETURNING id
+                    """
+                ),
                 payload,
             )
             return int(result.scalar())
@@ -184,10 +186,9 @@ def save_prediction(payload: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-def save_outcome(prediction_id: int,
-                 final_total_score: int,
-                 won: bool,
-                 pnl_try: float) -> Optional[int]:
+def save_outcome(
+    prediction_id: int, final_total_score: int, won: bool, pnl_try: float
+) -> int | None:
     """Tahmin sonucunu outcomes tablosuna yazar."""
     if not _is_ready() or prediction_id is None:
         return None
@@ -196,14 +197,19 @@ def save_outcome(prediction_id: int,
         return None
     try:
         with eng.begin() as conn:
-            result = conn.exec_driver_sql(
-                """
-                INSERT INTO outcomes
-                  (prediction_id, final_total_score, won, pnl_try)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-                """,
-                (prediction_id, final_total_score, won, pnl_try),
+            result = conn.execute(
+                text(
+                    "INSERT INTO outcomes"
+                    " (prediction_id, final_total_score, won, pnl_try)"
+                    " VALUES (:pid, :final_score, :won, :pnl)"
+                    " RETURNING id"
+                ),
+                {
+                    "pid": prediction_id,
+                    "final_score": final_total_score,
+                    "won": bool(won),
+                    "pnl": float(pnl_try),
+                },
             )
             return int(result.scalar())
     except Exception as e:
@@ -211,11 +217,9 @@ def save_outcome(prediction_id: int,
         return None
 
 
-def save_model_snapshot(league: str,
-                        context_tag: str,
-                        bias_weight: float,
-                        variance_modifier: float,
-                        mae: float) -> Optional[int]:
+def save_model_snapshot(
+    league: str, context_tag: str, bias_weight: float, variance_modifier: float, mae: float
+) -> int | None:
     """Model ağırlıklarını zaman damgalı olarak saklar (A/B test için)."""
     if not _is_ready():
         return None
@@ -224,14 +228,20 @@ def save_model_snapshot(league: str,
         return None
     try:
         with eng.begin() as conn:
-            result = conn.exec_driver_sql(
-                """
-                INSERT INTO model_snapshots
-                  (league, context_tag, bias_weight, variance_modifier, mae)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (league, context_tag, bias_weight, variance_modifier, mae),
+            result = conn.execute(
+                text(
+                    "INSERT INTO model_snapshots"
+                    " (league, context_tag, bias_weight, variance_modifier, mae)"
+                    " VALUES (:league, :ctx, :bias, :variance, :mae)"
+                    " RETURNING id"
+                ),
+                {
+                    "league": league,
+                    "ctx": context_tag,
+                    "bias": float(bias_weight),
+                    "variance": float(variance_modifier),
+                    "mae": float(mae),
+                },
             )
             return int(result.scalar())
     except Exception as e:
@@ -248,22 +258,24 @@ def recent_predictions(limit: int = 50) -> list[dict]:
         return []
     try:
         with eng.connect() as conn:
-            rows = conn.exec_driver_sql(
-                "SELECT * FROM predictions ORDER BY created_at DESC LIMIT %s",
-                (limit,),
+            rows = conn.execute(
+                text("SELECT * FROM predictions ORDER BY created_at DESC LIMIT :limit"),
+                {"limit": int(limit)},
             ).fetchall()
-            cols = conn.exec_driver_sql(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name='predictions' ORDER BY ordinal_position"
+            result = conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='predictions' ORDER BY ordinal_position"
+                )
             ).fetchall()
-            col_names = [c[0] for c in cols]
+            col_names = [c[0] for c in result]
             return [dict(zip(col_names, row)) for row in rows]
     except Exception as e:
         logger.warning("recent_predictions başarısız: %s", e)
         return []
 
 
-def long_term_roi() -> Dict[str, Any]:
+def long_term_roi() -> dict[str, Any]:
     """Tüm sonuçlanmış tahminler üzerinden toplam ROI özetini döner."""
     if not _is_ready():
         return {"total": 0, "won": 0, "lost": 0, "pnl_try": 0.0, "roi_pct": 0.0}
@@ -272,23 +284,30 @@ def long_term_roi() -> Dict[str, Any]:
         return {"total": 0, "won": 0, "lost": 0, "pnl_try": 0.0, "roi_pct": 0.0}
     try:
         with eng.connect() as conn:
-            row = conn.exec_driver_sql(
-                """
-                SELECT
-                  COUNT(*)        AS total,
-                  SUM(CASE WHEN won THEN 1 ELSE 0 END) AS won,
-                  SUM(CASE WHEN won THEN 0 ELSE 1 END) AS lost,
-                  COALESCE(SUM(pnl_try), 0) AS pnl_try
-                FROM outcomes
-                """
+            row = conn.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*)        AS total,
+                      SUM(CASE WHEN won THEN 1 ELSE 0 END) AS won,
+                      SUM(CASE WHEN won THEN 0 ELSE 1 END) AS lost,
+                      COALESCE(SUM(pnl_try), 0) AS pnl_try
+                    FROM outcomes
+                    """
+                )
             ).fetchone()
         total = int(row[0] or 0)
         won = int(row[1] or 0)
         lost = int(row[2] or 0)
         pnl = float(row[3] or 0.0)
         roi = (pnl / total * 100.0) if total else 0.0
-        return {"total": total, "won": won, "lost": lost,
-                "pnl_try": round(pnl, 2), "roi_pct": round(roi, 2)}
+        return {
+            "total": total,
+            "won": won,
+            "lost": lost,
+            "pnl_try": round(pnl, 2),
+            "roi_pct": round(roi, 2),
+        }
     except Exception as e:
         logger.warning("long_term_roi başarısız: %s", e)
         return {"total": 0, "won": 0, "lost": 0, "pnl_try": 0.0, "roi_pct": 0.0}

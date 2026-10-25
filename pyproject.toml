@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "goldenb"
+version = "0.1.0"
+description = "GoldenBet AI - Skor Tahmin Merkezi"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.39.0",
+    "numpy>=1.26.4",
+    "pandas>=2.2.3",
+    "nba_api>=1.4.1",
+    "requests>=2.32.3",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["__pycache__", ".git", "model_weights.json"]
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "SIM", "ARG", "C4", "PIE", "T20"]
+extend-ignore = ["S110"]  # try-except-pass: graceful degradation bilinçli tasarım
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+"app.py" = ["E501"]
+"tests/*" = ["S101", "S105", "S106", "S107", "E402", "ARG", "D"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+warn_unused_ignores = true
+allow_redefinition = true
+exclude = ["__pycache__", ".git"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*", "async_test_*"]
+addopts = "-v --tb=short -p no:warnings"

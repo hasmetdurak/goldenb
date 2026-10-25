@@ -1,6 +1,6 @@
 """
 GoldenBet AI - Yapısal Kural Matrisi (Core Structural Rules)
-============================================================
+===========================================================
 
 Üç katmandan oluşur:
 
@@ -28,33 +28,34 @@ GoldenBet AI - Yapısal Kural Matrisi (Core Structural Rules)
 
 from __future__ import annotations
 
-from typing import Dict
-
+from typing import Any
 
 # -----------------------------------------------------------------------------
 # 1) Süre ve Periyot Genetiği
 # -----------------------------------------------------------------------------
-LEAGUE_TOTAL_MINUTES: Dict[str, int] = {
-    "NBA": 48,
-    "EUROLEAGUE": 40,
-    "EUROCUP": 40,
-}
+LEAGUE_TOTAL_MINUTES: dict[str, int] = {"NBA": 48, "EUROLEAGUE": 40, "EUROCUP": 40}
 
-LEAGUE_PERIOD_MINUTES: Dict[str, int] = {
-    "NBA": 12,
-    "EUROLEAGUE": 10,
-    "EUROCUP": 10,
-}
+LEAGUE_PERIOD_MINUTES: dict[str, int] = {"NBA": 12, "EUROLEAGUE": 10, "EUROCUP": 10}
 
-LEAGUE_PERIODS: Dict[str, int] = {
-    "NBA": 4,
-    "EUROLEAGUE": 4,
-    "EUROCUP": 4,
-}
+LEAGUE_PERIODS: dict[str, int] = {"NBA": 4, "EUROLEAGUE": 4, "EUROCUP": 4}
+
+# Fikstür topolojisi / yorgunluk sabitleri (TopologyAware katman)
+#   B2B: ertesi gün maç → ~%4 tempo düşüşü; önceki maç uzatmaya gittiyse ek yorgunluk.
+TOPOLOGY_B2B_BACKOFF: float = 0.96
+TOPOLOGY_OT_FATIGUE: float = 0.94
+#   Efor katsayısı: sonraki maç kritik + bu maçın yenilgisi tolere edilebilir
+#   → koç yıldızları dinlendirir; rotasyon açıkken düşüş derinleşir.
+TOPOLOGY_EFFORT_CRITICAL: float = 0.92
+TOPOLOGY_EFFORT_ROTATION: float = 0.88
+#   Faul bonusu: bedava atış yoğunluğu → kalan süre hücum verimi artar.
+TOPOLOGY_BONUS_BOOST_HOME: float = 1.08
+TOPOLOGY_BONUS_BOOST_AWAY: float = 1.09
+#   Varyans büyümesinin tavanı (sonsuz 1.10 çarpımı patlamayı önler).
+VARIANCE_MODIFIER_CEILING: float = 1.6
 
 # Hücum süresi ve son-2-dk akış karakteri (sadece dokümantasyon; motor
 # bu sabitleri doğrudan kullanmaz ama bilgi panelinde gösterilir).
-LEAGUE_TIMING_NOTES: Dict[str, str] = {
+LEAGUE_TIMING_NOTES: dict[str, str] = {
     "NBA": (
         "Shot clock 24s · OR sonrası 14s reset · Son 2 dk'da mola/faul "
         "taktikleriyle skor hızla ivmelenir · Pace & Space yüksek varyans"
@@ -64,8 +65,7 @@ LEAGUE_TIMING_NOTES: Dict[str, str] = {
         "(boyalı alan kalabalık) · Son 2 dk'da oyun daha az bölünür"
     ),
     "EUROCUP": (
-        "Shot clock 24s · EuroLeague temposuna yakın · Daha az mola "
-        "· Varyans EuroLeague ile benzer"
+        "Shot clock 24s · EuroLeague temposuna yakın · Daha az mola · Varyans EuroLeague ile benzer"
     ),
 }
 
@@ -75,23 +75,19 @@ LEAGUE_TIMING_NOTES: Dict[str, str] = {
 # -----------------------------------------------------------------------------
 # EuroLeague savunma duvarı → düşük varyans (skor kontrollü akar)
 # NBA transition/early-offense → yüksek varyans (seriler mümkün)
-LEAGUE_BASE_VARIANCE: Dict[str, float] = {
-    "NBA": 1.20,         # Geniş dağılım — transition ve run-and-gun
+LEAGUE_BASE_VARIANCE: dict[str, float] = {
+    "NBA": 1.20,  # Geniş dağılım — transition ve run-and-gun
     "EUROLEAGUE": 0.85,  # Dar dağılım — savunma duvarı, yarı saha
-    "EUROCUP": 0.90,     # EuroLeague'e yakın, hafif daha açık
+    "EUROCUP": 0.90,  # EuroLeague'e yakın, hafif daha açık
 }
 
-LEAGUE_BASE_PACE: Dict[str, float] = {
-    "NBA": 1.00,
-    "EUROLEAGUE": 1.00,
-    "EUROCUP": 1.00,
-}
+LEAGUE_BASE_PACE: dict[str, float] = {"NBA": 1.00, "EUROLEAGUE": 1.00, "EUROCUP": 1.00}
 
 
 # -----------------------------------------------------------------------------
 # 3) Kültürel / Psikolojik Varyans Filtresi — Bağlam Etiketleri
 # -----------------------------------------------------------------------------
-CONTEXTUAL_MODIFIERS: Dict[str, Dict[str, object]] = {
+CONTEXTUAL_MODIFIERS: dict[str, dict[str, Any]] = {
     "Normal_Season_Match": {
         "pace_multiplier": 1.00,
         "variance_multiplier": 1.00,
@@ -152,7 +148,7 @@ CONTEXTUAL_MODIFIERS: Dict[str, Dict[str, object]] = {
 }
 
 
-def get_context_modifier(tag: str) -> Dict[str, object]:
+def get_context_modifier(tag: str) -> dict[str, Any]:
     """Etikete karşılık gelen modifier'ı döndürür; bilinmiyorsa normal sezon."""
     return CONTEXTUAL_MODIFIERS.get(tag, CONTEXTUAL_MODIFIERS["Normal_Season_Match"])
 
